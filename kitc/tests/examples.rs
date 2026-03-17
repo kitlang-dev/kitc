@@ -1,5 +1,4 @@
-use assert_cmd::{cargo::*, Command as AssertCommand};
-use predicates::prelude::*;
+use assert_cmd::{Command as AssertCommand, cargo::*};
 use std::{path::Path, process::Command, sync::OnceLock};
 
 static LOGGER_INIT: OnceLock<()> = OnceLock::new();
@@ -11,7 +10,7 @@ fn setup_logging() {
 }
 
 fn normalize_line_endings(s: &str) -> String {
-    s.replace("\r\n", "\n").replace("\r", "\n")
+    s.replace("\r\n", "\n")
 }
 
 const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
@@ -74,14 +73,16 @@ fn run_example_test(
     let expected_output = std::fs::read_to_string(expected_output_path)?;
     let expected_normalized = normalize_line_endings(&expected_output);
 
-    // Assert the output
-    compiled_cmd
-        .assert()
-        .stdout(predicate::eq(expected_normalized.as_str()))
-        .success();
+    // Run the compiled executable, capture output, normalize line endings, compare
+    let output = compiled_cmd.assert().success().get_output().stdout.clone();
 
-    // TODO: executable files are actually generated in the CWD, not in the examples folder.
-    // This explains why the executable is not actually generated in the examples folder.
+    let actual = String::from_utf8_lossy(&output).replace("\r\n", "\n");
+    assert_eq!(
+        actual, expected_normalized,
+        "stdout did not match expected output"
+    );
+
+    // Clean up generated files
     if let Err(err) = std::fs::remove_file(&executable_path) {
         log::error!("Failed to remove executable: {err}");
     }
