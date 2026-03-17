@@ -1,0 +1,17 @@
+include "stdio.h";
+
+var globalVar: Int = 42;
+const globalConst: Int = 100;
+var globalWithInference = 123;
+const constWithInference = 456;
+
+function main() {
+    printf("globalVar: %d\n", globalVar);
+    printf("globalConst: %d\n", globalConst);
+    printf("globalWithInference: %d\n", globalWithInference);
+    printf("constWithInference: %d\n", constWithInference);
+
+    // Test modifying global variable
+    globalVar = 999;
+    printf("modified globalVar: %d\n", globalVar);
+}

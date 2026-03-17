@@ -7,7 +7,7 @@ COMMENT_LINE = _{ "//" ~ (!NEWLINE ~ ANY)* ~ NEWLINE }
 var_kw = { "var" }
 const_kw = { "const" }
 
-program = _{ SOI ~ (import_stmt | include_stmt | function_decl | type_def | trait_def | trait_impl | rule_set | using_stmt)* ~ EOI }
+program = _{ SOI ~ (import_stmt | include_stmt | function_decl | var_decl | type_def | trait_def | trait_impl | rule_set | using_stmt)* ~ EOI }
 
 import_stmt = { "import" ~ path ~ ("." ~ ("*" | "**"))? ~ ";" }
 include_stmt = { "include" ~ string ~ ("=>" ~ string)? ~ ";" }

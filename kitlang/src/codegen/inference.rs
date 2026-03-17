@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use super::Field;
-use super::ast::{Block, Expr, Function, Literal, Program, Stmt};
+use super::ast::{Block, Expr, Function, GlobalDecl, Literal, Program, Stmt};
 use super::symbols::{EnumVariantInfo, SymbolTable};
 use super::type_ast::{EnumDefinition, FieldInit, StructDefinition};
 use super::types::{BinaryOperator, Type, TypeId, TypeStore, UnaryOperator};
@@ -44,8 +44,40 @@ impl TypeInferencer {
         self.register_enum_types(&prog.enums)?;
         self.register_struct_types(&prog.structs)?;
 
+        // Infer global variable types first (before functions)
+        self.infer_globals(&mut prog.globals)?;
+
         for func in &mut prog.functions {
             self.infer_function(func)?;
+        }
+        Ok(())
+    }
+
+    /// Infer types for global variable declarations
+    fn infer_globals(&mut self, globals: &mut [GlobalDecl]) -> CompileResult<()> {
+        for global in globals {
+            if let Some(init_expr) = &mut global.init {
+                let init_ty = self.infer_expr(init_expr)?;
+
+                global.inferred = if let Some(ann) = &global.annotation {
+                    let ann_ty = self.store.new_known(ann.clone());
+                    self.unify(ann_ty, init_ty)?;
+                    ann_ty
+                } else {
+                    init_ty
+                };
+
+                self.symbols.define_global(&global.name, global.inferred);
+            } else if let Some(ann) = &global.annotation {
+                // Declaration without initializer -> just use annotation
+                global.inferred = self.store.new_known(ann.clone());
+                self.symbols.define_global(&global.name, global.inferred);
+            } else {
+                return Err(CompilationError::TypeError(format!(
+                    "Global variable '{}' declared without type annotation or initializer",
+                    global.name
+                )));
+            }
         }
         Ok(())
     }
@@ -264,7 +296,11 @@ impl TypeInferencer {
     fn infer_expr(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
         let ty = match expr {
             Expr::Identifier(name, ty_id) => {
-                if let Some(var_ty) = self.symbols.lookup_var(name) {
+                // First check if it's a global variable
+                if let Some(global_ty) = self.symbols.lookup_global(name) {
+                    *ty_id = global_ty;
+                    global_ty
+                } else if let Some(var_ty) = self.symbols.lookup_var(name) {
                     *ty_id = var_ty;
                     var_ty
                 } else {

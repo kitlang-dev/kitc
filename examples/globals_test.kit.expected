@@ -1,0 +1,5 @@
+globalVar: 42
+globalConst: 100
+globalWithInference: 123
+constWithInference: 456
+modified globalVar: 999

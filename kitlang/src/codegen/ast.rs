@@ -191,7 +191,7 @@ pub enum Expr {
     },
 }
 
-/// Represents literal values in Kit.
+/// Represents a literal value in Kit.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Literal {
     /// Signed integer literal.
@@ -204,6 +204,21 @@ pub enum Literal {
     Bool(bool),
     /// Null pointer literal.
     Null,
+}
+
+/// Represents a global variable or constant declaration.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlobalDecl {
+    /// Variable name.
+    pub name: String,
+    /// Type annotation (`None` for type inference).
+    pub annotation: Option<Type>,
+    /// Inferred variable type ID.
+    pub inferred: TypeId,
+    /// Initializer expression (`None` for uninitialized).
+    pub init: Option<Expr>,
+    /// Whether this is a const declaration.
+    pub is_const: bool,
 }
 
 impl Literal {
@@ -247,6 +262,8 @@ pub struct Program {
     pub includes: Vec<Include>,
     /// Kit module imports (not directly used in C generation).
     pub imports: HashSet<String>,
+    /// Top-level global variable and constant declarations.
+    pub globals: Vec<GlobalDecl>,
     /// Top-level function definitions.
     pub functions: Vec<Function>,
     /// Struct type definitions.

@@ -16,7 +16,10 @@ pub struct EnumVariantInfo {
 /// Currently uses a flat scope (no nesting). Variables and functions are tracked
 /// by their names and their `TypeId`s.
 pub struct SymbolTable {
-    /// Maps variable names to their inferred `TypeId`s.
+    /// Maps global variable names to their inferred `TypeId`s.
+    globals: HashMap<String, TypeId>,
+
+    /// Maps local variable names to their inferred `TypeId`s.
     vars: HashMap<String, TypeId>,
 
     /// Maps function names to their signatures (parameter types, return type).
@@ -41,12 +44,23 @@ impl Default for SymbolTable {
 impl SymbolTable {
     pub fn new() -> Self {
         Self {
+            globals: HashMap::new(),
             vars: HashMap::new(),
             functions: HashMap::new(),
             structs: HashMap::new(),
             enums: HashMap::new(),
             enum_variants: HashMap::new(),
         }
+    }
+
+    /// Define a global variable in the symbol table.
+    pub fn define_global(&mut self, name: &str, ty: TypeId) {
+        self.globals.insert(name.to_string(), ty);
+    }
+
+    /// Look up a global variable's type.
+    pub fn lookup_global(&self, name: &str) -> Option<TypeId> {
+        self.globals.get(name).copied()
     }
 
     /// Define a variable in the current scope.

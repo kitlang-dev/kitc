@@ -1,5 +1,4 @@
 use assert_cmd::{Command as AssertCommand, cargo::*};
-use predicates::prelude::*;
 use std::{path::Path, process::Command, sync::OnceLock};
 
 static LOGGER_INIT: OnceLock<()> = OnceLock::new();
@@ -8,6 +7,10 @@ fn setup_logging() {
     LOGGER_INIT.get_or_init(|| {
         env_logger::builder().is_test(true).init();
     });
+}
+
+fn normalize_line_endings(s: &str) -> String {
+    s.replace("\r\n", "\n")
 }
 
 const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
@@ -74,14 +77,18 @@ fn run_example_test(
     let expected_output_path = workspace_root.join(expected_file);
     log::info!("Expected output: {}", expected_output_path.display());
     let expected_output = std::fs::read_to_string(expected_output_path)?;
+    let expected_normalized = normalize_line_endings(&expected_output);
 
-    // Assert the output
-    compiled_cmd
-        .assert()
-        .stdout(predicate::eq(expected_output.as_str()))
-        .success();
+    // Run the compiled executable, capture output, normalize line endings, compare
+    let output = compiled_cmd.assert().success().get_output().stdout.clone();
 
-    // Cleanup generated files
+    let actual = String::from_utf8_lossy(&output).replace("\r\n", "\n");
+    assert_eq!(
+        actual, expected_normalized,
+        "stdout did not match expected output"
+    );
+
+    // Clean up generated files
     if let Err(err) = std::fs::remove_file(&executable_path) {
         log::error!("Failed to remove executable: {err}");
     }
@@ -197,6 +204,21 @@ fn test_enum_basic() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn test_enum_defaults() -> Result<(), Box<dyn std::error::Error>> {
     run_example_test("enum_defaults", None)
+}
+
+#[test]
+fn test_globals_basic() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test("globals_basic", None)
+}
+
+#[test]
+fn test_globals_comprehensive() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test("globals_comprehensive", None)
+}
+
+#[test]
+fn test_globals_test() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test("globals_test", None)
 }
 
 #[test]

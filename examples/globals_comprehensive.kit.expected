@@ -1,0 +1,17 @@
+--- Basic Types ---
+globalInt: 42
+globalConstInt: 100
+globalFloat: 3.140000
+globalConstFloat: 2.718000
+globalString: hello
+globalConstString: world
+globalBool: 1
+globalConstBool: 0
+--- References ---
+globalRef: 52
+globalConstRef: 150
+--- Modification ---
+modified globalInt: 999
+modified globalFloat: 1.500000
+modified globalString: modified
+modified globalBool: 0

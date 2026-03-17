@@ -1,0 +1,24 @@
+include "stdio.h";
+
+var globalInt: Int = 42;
+const globalConstInt: Int = 100;
+var globalFloat: Float = 3.14;
+const globalConstFloat: Float = 2.718;
+var globalBool: Bool = true;
+const globalConstBool: Bool = false;
+
+function main() {
+    printf("globalInt: %d\n", globalInt);
+    printf("globalConstInt: %d\n", globalConstInt);
+    printf("globalFloat: %f\n", globalFloat);
+    printf("globalConstFloat: %f\n", globalConstFloat);
+    printf("globalBool: %d\n", globalBool);
+    printf("globalConstBool: %d\n", globalConstBool);
+
+    globalInt = 999;
+    globalFloat = 1.5;
+    globalBool = false;
+    printf("modified globalInt: %d\n", globalInt);
+    printf("modified globalFloat: %f\n", globalFloat);
+    printf("modified globalBool: %d\n", globalBool);
+}

@@ -4,7 +4,7 @@ use crate::codegen::types::{BinaryOperator, UnaryOperator};
 use crate::error::CompilationError;
 use crate::{Rule, parse_error};
 
-use super::ast::{Block, Expr, Function, Include, Literal, Param, Stmt};
+use super::ast::{Block, Expr, Function, GlobalDecl, Include, Literal, Param, Stmt};
 use super::type_ast::{EnumDefinition, EnumVariant, Field, FieldInit, StructDefinition};
 use super::types::{AssignmentOperator, Type, TypeId};
 use crate::error::CompileResult;
@@ -369,6 +369,32 @@ impl Parser {
             annotation,
             inferred: TypeId::default(),
             init,
+        })
+    }
+
+    pub fn parse_global_var_decl(&self, pair: Pair<Rule>) -> CompileResult<GlobalDecl> {
+        // Parse a global variable or constant declaration at module level
+        let name = Self::extract_first_identifier(pair.clone())
+            .ok_or(parse_error!("global var_decl missing identifier"))?;
+
+        let is_const = Self::is_const_var_decl(pair.clone());
+
+        // Parse type annotation if present
+        let annotation = Self::extract_type_annotation(pair.clone())
+            .map(|type_pair| self.parse_type(type_pair))
+            .transpose()?;
+
+        // Parse initializer expression if present
+        let init = Self::extract_init_expr(pair.clone())
+            .map(|expr_pair| self.parse_expr(expr_pair))
+            .transpose()?;
+
+        Ok(GlobalDecl {
+            name,
+            annotation,
+            inferred: TypeId::default(),
+            init,
+            is_const,
         })
     }
 

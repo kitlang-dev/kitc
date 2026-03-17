@@ -1,0 +1,9 @@
+globalInt: 42
+globalConstInt: 100
+globalFloat: 3.140000
+globalConstFloat: 2.718000
+globalBool: 1
+globalConstBool: 0
+modified globalInt: 999
+modified globalFloat: 1.500000
+modified globalBool: 0

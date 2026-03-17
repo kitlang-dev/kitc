@@ -7,7 +7,7 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::codegen::ast::{Block, Expr, Function, Include, Program, Stmt};
+use crate::codegen::ast::{Block, Expr, Function, GlobalDecl, Include, Program, Stmt};
 use crate::codegen::compiler::{CompilerMeta, CompilerOptions, Toolchain};
 use crate::codegen::inference::TypeInferencer;
 use crate::codegen::parser::Parser as CodeParser;
@@ -39,6 +39,7 @@ impl Compiler {
 
     fn parse(&mut self) -> CompileResult<Program> {
         let mut includes = Vec::new();
+        let mut globals = Vec::new();
         let mut functions = Vec::new();
         let mut structs = Vec::new();
         let mut enums = Vec::new();
@@ -63,6 +64,10 @@ impl Compiler {
                 match pair.as_rule() {
                     Rule::include_stmt => {
                         includes.push(self.parser.parse_include(pair));
+                    }
+
+                    Rule::var_decl => {
+                        globals.push(self.parser.parse_global_var_decl(pair)?);
                     }
 
                     Rule::function_decl => {
@@ -95,6 +100,7 @@ impl Compiler {
         Ok(Program {
             includes,
             imports: HashSet::new(),
+            globals,
             functions,
             structs,
             enums,
@@ -135,16 +141,36 @@ impl Compiler {
             }
         };
 
-        // Emit struct declarations first
+        // Scan all types to gather required headers BEFORE emitting code that uses them
+        // Scan struct field types
         for struct_def in &prog.structs {
-            out.push_str(&self.generate_struct_declaration(struct_def, &prog.structs));
-            out.push('\n');
+            for field in &struct_def.fields {
+                if let Ok(ty) = self.inferencer.store.resolve(field.ty) {
+                    collect_from_type(&ty);
+                } else if let Some(ann) = &field.annotation {
+                    collect_from_type(ann);
+                }
+            }
         }
 
-        // Emit enum declarations
+        // Scan enum variant argument types
         for enum_def in &prog.enums {
-            out.push_str(&self.generate_enum_declaration(enum_def));
-            out.push('\n');
+            for variant in &enum_def.variants {
+                for arg in &variant.args {
+                    if let Ok(ty) = self.inferencer.store.resolve(arg.ty) {
+                        collect_from_type(&ty);
+                    } else if let Some(ann) = &arg.annotation {
+                        collect_from_type(ann);
+                    }
+                }
+            }
+        }
+
+        // Scan global variable types
+        for global in &prog.globals {
+            if let Ok(ty) = self.inferencer.store.resolve(global.inferred) {
+                collect_from_type(&ty);
+            }
         }
 
         // scan every function signature & body for types to gather their headers/typedefs
@@ -188,12 +214,59 @@ impl Compiler {
             out.push('\n');
         }
 
+        // Emit struct declarations
+        for struct_def in &prog.structs {
+            out.push_str(&self.generate_struct_declaration(struct_def, &prog.structs));
+            out.push('\n');
+        }
+
+        // Emit enum declarations
+        for enum_def in &prog.enums {
+            out.push_str(&self.generate_enum_declaration(enum_def));
+            out.push('\n');
+        }
+
+        // Emit global variable declarations
+        for global in &prog.globals {
+            out.push_str(&self.transpile_global(global));
+            out.push('\n');
+        }
+
         // emit functions as before...
         for func in &prog.functions {
             out.push_str(&self.transpile_function(func));
             out.push_str("\n\n");
         }
         out
+    }
+
+    fn transpile_global(&self, global: &GlobalDecl) -> String {
+        let ty = self.inferencer.store.resolve(global.inferred).map_or_else(
+            |_| "int".to_string(),
+            |t| {
+                if let Type::Named(name) = &t {
+                    if self.inferencer.is_struct_type(name) {
+                        format!("struct {}", name)
+                    } else {
+                        t.to_c_repr().name
+                    }
+                } else {
+                    t.to_c_repr().name
+                }
+            },
+        );
+
+        let const_prefix = if global.is_const { "const " } else { "" };
+
+        match &global.init {
+            Some(expr) => {
+                let init_str = self.transpile_expr(expr);
+                format!("{const_prefix}{ty} {} = {init_str};", global.name)
+            }
+            None => {
+                format!("{const_prefix}{ty} {};", global.name)
+            }
+        }
     }
 
     fn generate_struct_declaration(
