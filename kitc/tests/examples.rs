@@ -49,12 +49,18 @@ fn run_example_test(
     );
 
     let source_path = workspace_root.join(example_file);
-    let c_path = source_path.with_extension("c");
-    let executable_path = source_path.with_extension("");
+    let ext = if cfg!(windows) { "exe" } else { "" };
+    let executable_path = source_path.with_extension(ext);
 
     // Compile the example
     let kitc = cargo_bin!("kitc");
     log::info!("kitc path: {}", kitc.display());
+
+    // Note: C file cleanup is handled by the compiler itself (see frontend.rs).
+    // SAFETY: these unit tests are single-threaded, so no race conditions
+    // unsafe {
+    //     std::env::set_var("KEEP_C", "");
+    // }
     let mut cmd = AssertCommand::from_std(Command::new(kitc));
 
     // Run from workspace root
@@ -85,9 +91,6 @@ fn run_example_test(
     // Clean up generated files
     if let Err(err) = std::fs::remove_file(&executable_path) {
         log::error!("Failed to remove executable: {err}");
-    }
-    if let Err(err) = std::fs::remove_file(&c_path) {
-        log::error!("Failed to remove C source file: {err}");
     }
 
     Ok(())
