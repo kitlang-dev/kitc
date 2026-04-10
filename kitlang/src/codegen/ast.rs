@@ -1,7 +1,7 @@
 use crate::codegen::types::{AssignmentOperator, BinaryOperator, Type, TypeId, UnaryOperator};
 
 use super::type_ast::{EnumDefinition, FieldInit, StructDefinition};
-use std::collections::HashSet;
+use std::path::PathBuf;
 
 /// Represents a C header inclusion.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -258,10 +258,12 @@ impl Literal {
 /// A fully parsed Kit program.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
+    /// The module path for this program (if known)
+    pub module_path: Option<ModulePath>,
     /// C header inclusions required by the program.
     pub includes: Vec<Include>,
-    /// Kit module imports (not directly used in C generation).
-    pub imports: HashSet<String>,
+    /// Kit module imports
+    pub imports: Vec<ModuleImport>,
     /// Top-level global variable and constant declarations.
     pub globals: Vec<GlobalDecl>,
     /// Top-level function definitions.
@@ -270,4 +272,33 @@ pub struct Program {
     pub structs: Vec<StructDefinition>,
     /// Enum type definitions.
     pub enums: Vec<EnumDefinition>,
+}
+
+/// A module path (e.g., ["pkg", "utils"] -> "pkg.utils")
+pub type ModulePath = Vec<String>;
+
+/// The type of import statement
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ImportType {
+    /// `import foo.bar;`
+    Single,
+    /// `import foo.bar.*;`
+    Wildcard,
+    /// `import foo.bar.**;`
+    DoubleWildcard,
+}
+
+/// Represents an import statement
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ModuleImport {
+    pub path: ModulePath,
+    pub import_type: ImportType,
+}
+
+/// Represents a loaded module
+#[derive(Clone, Debug)]
+pub struct Module {
+    pub path: ModulePath,
+    pub source_path: PathBuf,
+    pub program: Program,
 }

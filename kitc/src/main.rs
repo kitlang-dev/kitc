@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand};
 use kitlang::codegen::frontend::Compiler;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time;
-use std::{fs, path::PathBuf, process::Command};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -20,6 +21,10 @@ enum Commands {
     Compile {
         /// The `.kit` source file
         source: PathBuf,
+
+        /// Add a source path (format: dir or dir:prefix). Can be repeated.
+        #[arg(short = 'p', long = "source-path")]
+        source_paths: Vec<String>,
 
         /// The libraries to link against
         #[arg(short, long)]
@@ -44,6 +49,7 @@ fn main() -> Result<(), Error> {
     match command {
         Commands::Compile {
             source,
+            source_paths,
             libs,
             run,
             measure,
@@ -56,7 +62,7 @@ fn main() -> Result<(), Error> {
                 return Ok(());
             }
 
-            let exe_path = compile(&source, &libs, measure)?;
+            let exe_path = compile(&source, &source_paths, &libs, measure)?;
             if run {
                 run_executable(&exe_path)?;
             } else {
@@ -67,14 +73,23 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
-fn compile(source: &PathBuf, libs: &[String], measure: bool) -> Result<PathBuf, String> {
+fn compile(
+    source: &Path,
+    source_paths: &[String],
+    libs: &[String],
+    measure: bool,
+) -> Result<PathBuf, String> {
     let init = time::Instant::now();
-    fs::read_to_string(source).map_err(|_| format!("couldn't read {}", source.display()))?;
 
     let ext = if cfg!(windows) { "exe" } else { "" };
     let exe_path = source.with_extension(ext);
 
-    let mut compiler = Compiler::new(vec![source.clone()], &exe_path, libs.to_vec());
+    let mut compiler = Compiler::new(
+        vec![source.to_path_buf()],
+        &exe_path,
+        libs.to_vec(),
+        source_paths.to_vec(),
+    );
 
     compiler
         .compile()
@@ -89,7 +104,7 @@ fn compile(source: &PathBuf, libs: &[String], measure: bool) -> Result<PathBuf, 
 
 // TODO: return the exit status from the compiler code, and return Err() if it failed, probably
 // adding an exit status (to exit with).
-fn run_executable(exe_path: &PathBuf) -> Result<(), String> {
+fn run_executable(exe_path: &Path) -> Result<(), String> {
     let status = Command::new(exe_path)
         .status()
         .map_err(|e| format!("failed to launch executable: {e}"))?;

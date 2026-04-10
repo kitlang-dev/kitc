@@ -4,7 +4,9 @@ use crate::codegen::types::{BinaryOperator, UnaryOperator};
 use crate::error::CompilationError;
 use crate::{Rule, parse_error};
 
-use super::ast::{Block, Expr, Function, GlobalDecl, Include, Literal, Param, Stmt};
+use super::ast::{
+    Block, Expr, Function, GlobalDecl, ImportType, Include, Literal, ModuleImport, Param, Stmt,
+};
 use super::type_ast::{EnumDefinition, EnumVariant, Field, FieldInit, StructDefinition};
 use super::types::{AssignmentOperator, Type, TypeId};
 use crate::error::CompileResult;
@@ -56,6 +58,29 @@ impl Parser {
         // Strip the quotes from the string literal
         let path = path_str[1..path_str.len() - 1].to_string();
         Include { path }
+    }
+
+    pub fn parse_import(&self, pair: Pair<Rule>) -> ModuleImport {
+        // import_stmt = { "import" ~ path ~ ("." ~ ("*" | "**"))? ~ ";" }
+        let mut inner = pair.into_inner();
+
+        // First child is the path
+        let path_pair = inner.next().unwrap();
+        let path_str = path_pair.as_str();
+        let path: Vec<String> = path_str.split('.').map(String::from).collect();
+
+        // Check for wildcard modifier
+        let import_type = if let Some(modifier) = inner.next() {
+            match modifier.as_str() {
+                ".*" => ImportType::Wildcard,
+                ".**" => ImportType::DoubleWildcard,
+                _ => ImportType::Single,
+            }
+        } else {
+            ImportType::Single
+        };
+
+        ModuleImport { path, import_type }
     }
 
     pub fn parse_function(&self, pair: Pair<Rule>) -> CompileResult<Function> {

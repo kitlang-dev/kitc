@@ -7,7 +7,7 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::codegen::ast::{Block, Expr, Function, GlobalDecl, Include, Program, Stmt};
+use crate::codegen::ast::{Block, Expr, Function, GlobalDecl, ModulePath, Program, Stmt};
 use crate::codegen::compiler::{CompilerMeta, CompilerOptions, Toolchain};
 use crate::codegen::inference::TypeInferencer;
 use crate::codegen::parser::Parser as CodeParser;
@@ -18,93 +18,201 @@ pub struct Compiler {
     files: Vec<PathBuf>,
     output: PathBuf,
     c_output: PathBuf,
-    includes: Vec<Include>,
     libs: Vec<String>,
-    parser: CodeParser,
+    source_paths: Vec<(PathBuf, ModulePath)>,
     inferencer: TypeInferencer,
 }
 
+fn parse_source_path(s: &str) -> Option<(PathBuf, ModulePath)> {
+    let parts: Vec<&str> = s.split(':').collect();
+    match parts.as_slice() {
+        [dir] if !dir.is_empty() => Some((PathBuf::from(dir), Vec::new())),
+        [dir, prefix] if !dir.is_empty() && !prefix.is_empty() => {
+            let path: ModulePath = prefix.split('.').map(String::from).collect();
+            Some((PathBuf::from(dir), path))
+        }
+        _ => None,
+    }
+}
+
+fn strip_module_prefix(path: &[String], prefix: &[String]) -> Option<ModulePath> {
+    if prefix.is_empty() {
+        return Some(path.to_vec());
+    }
+    if path.len() >= prefix.len() && &path[..prefix.len()] == prefix {
+        Some(path[prefix.len()..].to_vec())
+    } else {
+        None
+    }
+}
+
+/// Find a module file given its module path and source paths
+fn find_module_file(path: &ModulePath, source_paths: &[(PathBuf, ModulePath)]) -> Option<PathBuf> {
+    for (dir, prefix) in source_paths {
+        if let Some(remaining) = strip_module_prefix(path, prefix) {
+            let file_path = dir.join(remaining.join("/")).with_extension("kit");
+            if file_path.exists() {
+                return Some(file_path);
+            }
+            let mod_file = dir.join(remaining.join("/")).join("_mod.kit");
+            if mod_file.exists() {
+                return Some(mod_file);
+            }
+        }
+    }
+    None
+}
+
+/// Load a single module and recursively its imports
+fn load_module_recursive(
+    file: &Path,
+    source_paths: &[(PathBuf, ModulePath)],
+    modules: &mut Vec<(ModulePath, Program)>,
+    loaded: &mut std::collections::HashSet<PathBuf>,
+) -> CompileResult<()> {
+    // Skip if already loaded
+    if file.exists() && loaded.contains(file) {
+        return Ok(());
+    }
+
+    loaded.insert(file.to_path_buf());
+
+    // Parse this file
+    #[allow(clippy::redundant_closure)]
+    let input = std::fs::read_to_string(file).map_err(|e| CompilationError::Io(e))?;
+
+    let pairs = KitParser::parse(Rule::program, &input)
+        .map_err(|e| CompilationError::ParseError(e.to_string()))?;
+
+    let parser = CodeParser::new();
+    let mut includes = Vec::new();
+    let mut imports = Vec::new();
+    let mut globals = Vec::new();
+    let mut functions = Vec::new();
+    let mut structs = Vec::new();
+    let mut enums = Vec::new();
+
+    for pair in pairs {
+        match pair.as_rule() {
+            Rule::include_stmt => {
+                includes.push(parser.parse_include(pair));
+            }
+            Rule::import_stmt => {
+                imports.push(parser.parse_import(pair));
+            }
+            Rule::var_decl => {
+                globals.push(parser.parse_global_var_decl(pair)?);
+            }
+            Rule::function_decl => {
+                functions.push(parser.parse_function(pair)?);
+            }
+            Rule::type_def => {
+                for child in pair.into_inner() {
+                    match child.as_rule() {
+                        Rule::enum_def => {
+                            enums.push(parser.parse_enum_def(child)?);
+                        }
+                        Rule::struct_def => {
+                            structs.push(parser.parse_struct_def(child)?);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Determine module path from file
+    let module_path = determine_module_path(file, source_paths);
+
+    let program = Program {
+        module_path: Some(module_path.clone()),
+        includes,
+        imports,
+        globals,
+        functions,
+        structs,
+        enums,
+    };
+
+    modules.push((module_path.clone(), program.clone()));
+
+    // Recursively load imports
+    for import in &program.imports {
+        if let Some(import_file) = find_module_file(&import.path, source_paths) {
+            load_module_recursive(&import_file, source_paths, modules, loaded)?;
+        } else {
+            return Err(CompilationError::ParseError(format!(
+                "Could not find module: {}",
+                import.path.join(".")
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Determine the module path from a file path
+fn determine_module_path(file: &Path, source_paths: &[(PathBuf, ModulePath)]) -> ModulePath {
+    if let Some(parent) = file.parent() {
+        for (dir, prefix) in source_paths {
+            if let Ok(rel) = parent.strip_prefix(dir) {
+                let mut path = prefix.clone();
+                for component in rel.iter() {
+                    if component.to_string_lossy() != "_mod.kit" {
+                        path.push(component.to_string_lossy().to_string());
+                    }
+                }
+                if let Some(stem) = file.file_stem() {
+                    let stem_str = stem.to_string_lossy().to_string();
+                    if stem_str != "_mod" {
+                        path.push(stem_str);
+                    }
+                }
+                return path;
+            }
+        }
+    }
+    vec![file.file_stem().unwrap().to_string_lossy().to_string()]
+}
+
 impl Compiler {
-    pub fn new(files: Vec<PathBuf>, output: impl AsRef<Path>, libs: Vec<String>) -> Self {
+    /// Build the module graph by loading the entry file and all its imports
+    fn build_module_graph(&mut self) -> CompileResult<Vec<(ModulePath, Program)>> {
+        let mut modules = Vec::new();
+        let mut loaded = std::collections::HashSet::new();
+
+        // Extract source_paths to avoid borrow issues
+        let source_paths = self.source_paths.clone();
+
+        // Load each file in self.files
+        for file in &self.files {
+            load_module_recursive(file, &source_paths, &mut modules, &mut loaded)?;
+        }
+
+        Ok(modules)
+    }
+
+    pub fn new(
+        files: Vec<PathBuf>,
+        output: impl AsRef<Path>,
+        libs: Vec<String>,
+        source_paths: Vec<String>,
+    ) -> Self {
+        let parsed_source_paths: Vec<(PathBuf, ModulePath)> = source_paths
+            .iter()
+            .filter_map(|sp| parse_source_path(sp))
+            .collect();
+
         Self {
             files,
             output: output.as_ref().to_path_buf(),
             c_output: output.as_ref().with_extension("c"),
-            includes: Vec::new(),
             libs,
-            parser: CodeParser::new(),
+            source_paths: parsed_source_paths,
             inferencer: TypeInferencer::new(),
         }
-    }
-
-    fn parse(&mut self) -> CompileResult<Program> {
-        let mut includes = Vec::new();
-        let mut globals = Vec::new();
-        let mut functions = Vec::new();
-        let mut structs = Vec::new();
-        let mut enums = Vec::new();
-
-        // Track file encoding (future-proofing)
-        // true = UTF-8, false = binary (rejected)
-        let mut files_utf8 = vec![true; self.files.len()];
-
-        for (idx, file) in self.files.iter().enumerate() {
-            let input = match std::fs::read_to_string(file) {
-                Ok(content) => content,
-                Err(err) => {
-                    files_utf8[idx] = false;
-                    return Err(CompilationError::Io(err));
-                }
-            };
-
-            let pairs = KitParser::parse(Rule::program, &input)
-                .map_err(|e| CompilationError::ParseError(e.to_string()))?;
-
-            for pair in pairs {
-                match pair.as_rule() {
-                    Rule::include_stmt => {
-                        includes.push(self.parser.parse_include(pair));
-                    }
-
-                    Rule::var_decl => {
-                        globals.push(self.parser.parse_global_var_decl(pair)?);
-                    }
-
-                    Rule::function_decl => {
-                        functions.push(self.parser.parse_function(pair)?);
-                    }
-
-                    Rule::type_def => {
-                        for child in pair.into_inner() {
-                            match child.as_rule() {
-                                Rule::enum_def => {
-                                    enums.push(self.parser.parse_enum_def(child)?);
-                                    break;
-                                }
-                                Rule::struct_def => {
-                                    structs.push(self.parser.parse_struct_def(child)?);
-                                    break;
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-
-                    _ => {}
-                }
-            }
-        }
-
-        self.includes.clone_from(&includes);
-
-        Ok(Program {
-            includes,
-            imports: HashSet::new(),
-            globals,
-            functions,
-            structs,
-            enums,
-        })
     }
 
     /// Generate C code from the AST and write it to the output path
@@ -795,10 +903,52 @@ impl Compiler {
     }
 
     pub fn compile(&mut self) -> CompileResult<()> {
-        let mut prog = self.parse()?;
+        let modules = self.build_module_graph()?;
 
-        self.inferencer.infer_program(&mut prog)?;
-        self.transpile_with_program(&prog);
+        // For now, merge all modules into a single program for compilation
+        // Functions from imported modules come first (for forward declarations)
+        let mut merged_program = Program {
+            module_path: None,
+            includes: Vec::new(),
+            imports: Vec::new(),
+            globals: Vec::new(),
+            functions: Vec::new(),
+            structs: Vec::new(),
+            enums: Vec::new(),
+        };
+
+        // Entry module is the one that corresponds to self.files[0]
+        let entry_path = if let Some(f) = self.files.first() {
+            determine_module_path(f, &self.source_paths)
+        } else {
+            vec![]
+        };
+
+        for (_path, program) in modules.into_iter() {
+            // Entry module goes last, imported modules first
+            if _path == entry_path {
+                merged_program.includes.extend(program.includes);
+                merged_program.imports.extend(program.imports);
+                merged_program.globals.extend(program.globals);
+                merged_program.functions.extend(program.functions);
+                merged_program.structs.extend(program.structs);
+                merged_program.enums.extend(program.enums);
+            } else {
+                // Put imports first
+                merged_program.includes.extend(program.includes);
+                merged_program.imports.extend(program.imports);
+                merged_program.globals.extend(program.globals);
+                // Prepend functions from imported modules
+                for f in program.functions.into_iter().rev() {
+                    merged_program.functions.insert(0, f);
+                }
+                merged_program.structs.extend(program.structs);
+                merged_program.enums.extend(program.enums);
+            }
+        }
+
+        self.inferencer.infer_program(&mut merged_program)?;
+        self.transpile_with_program(&merged_program);
 
         let detected = Toolchain::executable_path().ok_or(CompilationError::ToolchainNotFound)?;
 
