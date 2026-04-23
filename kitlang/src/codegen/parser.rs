@@ -5,7 +5,8 @@ use crate::error::CompilationError;
 use crate::{Rule, parse_error};
 
 use super::ast::{
-    Block, Expr, Function, GlobalDecl, ImportType, Include, Literal, ModuleImport, Param, Stmt,
+    Block, Expr, Function, GlobalDecl, ImportType, Include, Literal, ModuleImport, ModulePath,
+    Param, Stmt,
 };
 use super::type_ast::{EnumDefinition, EnumVariant, Field, FieldInit, StructDefinition};
 use super::types::{AssignmentOperator, Type, TypeId};
@@ -67,7 +68,7 @@ impl Parser {
         // First child is the path
         let path_pair = inner.next().unwrap();
         let path_str = path_pair.as_str();
-        let path: Vec<String> = path_str.split('.').map(String::from).collect();
+        let path = ModulePath(path_str.split('.').map(String::from).collect());
 
         // Check for wildcard modifier
         let import_type = if let Some(modifier) = inner.next() {

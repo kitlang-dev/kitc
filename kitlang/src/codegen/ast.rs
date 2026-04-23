@@ -275,7 +275,40 @@ pub struct Program {
 }
 
 /// A module path (e.g., ["pkg", "utils"] -> "pkg.utils")
-pub type ModulePath = Vec<String>;
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ModulePath(pub Vec<String>);
+
+impl ModulePath {
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    pub fn from_parts(parts: &[&str]) -> Self {
+        Self(parts.iter().map(|s| s.to_string()).collect())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn join(&self, sep: &str) -> String {
+        self.0.join(sep)
+    }
+
+    pub fn push(&mut self, part: String) {
+        self.0.push(part);
+    }
+
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+}
+
+impl Default for ModulePath {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// The type of import statement
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

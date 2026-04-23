@@ -15,6 +15,77 @@ fn normalize_line_endings(s: &str) -> String {
 
 const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
+fn run_example_test_with_source_path(
+    example_name: &str,
+    source_path: &str,
+    stdin: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    setup_logging();
+
+    let workspace_root = Path::new(MANIFEST_DIR)
+        .parent()
+        .ok_or("couldn't get workspace root")?;
+
+    let examples_dir = workspace_root.join("examples");
+    let example_file = examples_dir.join(format!("{example_name}.kit"));
+    let expected_file = examples_dir.join(format!("{example_name}.kit.expected"));
+
+    assert!(
+        example_file.exists(),
+        "example file {} does not exist",
+        example_file.display()
+    );
+
+    assert!(
+        expected_file.exists(),
+        "expected file {} does not exist",
+        expected_file.display()
+    );
+
+    log::info!(
+        "Running example {} in {} (path: {})",
+        example_name,
+        workspace_root.display(),
+        example_file.display()
+    );
+
+    let source_path_full = workspace_root.join(example_file);
+    let ext = if cfg!(windows) { "exe" } else { "" };
+    let executable_path = source_path_full.with_extension(ext);
+
+    let kitc = cargo_bin!("kitc");
+    log::info!("kitc path: {}", kitc.display());
+
+    let mut cmd = AssertCommand::from_std(Command::new(kitc));
+    cmd.current_dir(workspace_root);
+    cmd.arg("compile");
+    cmd.arg("--source-path");
+    cmd.arg(source_path);
+    cmd.arg(&source_path_full);
+    cmd.assert().success();
+
+    let mut compiled_cmd = AssertCommand::new(&executable_path);
+    if let Some(stdin_data) = stdin {
+        compiled_cmd.write_stdin(stdin_data);
+    }
+
+    let expected_output = std::fs::read_to_string(expected_file)?;
+    let expected_normalized = normalize_line_endings(&expected_output);
+
+    let output = compiled_cmd.assert().success().get_output().stdout.clone();
+    let actual = String::from_utf8_lossy(&output).replace("\r\n", "\n");
+    assert_eq!(
+        actual, expected_normalized,
+        "stdout did not match expected output"
+    );
+
+    if let Err(err) = std::fs::remove_file(&executable_path) {
+        log::error!("Failed to remove executable: {err}");
+    }
+
+    Ok(())
+}
+
 fn run_example_test(
     example_name: &str,
     stdin: Option<&str>,
@@ -247,4 +318,9 @@ fn test_nested_comments() -> Result<(), Box<dyn std::error::Error>> {
     assert!(result.try_success().is_err());
 
     Ok(())
+}
+
+#[test]
+fn test_multi_file_import() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test_with_source_path("multi_file_main", "examples", None)
 }

@@ -3,6 +3,7 @@ use crate::{KitParser, Rule, error::CompilationError};
 use pest::Parser;
 
 use std::collections::HashSet;
+use std::env;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -10,6 +11,9 @@ use std::process::Command;
 use crate::codegen::ast::{Block, Expr, Function, GlobalDecl, ModulePath, Program, Stmt};
 use crate::codegen::compiler::{CompilerMeta, CompilerOptions, Toolchain};
 use crate::codegen::inference::TypeInferencer;
+use crate::codegen::name_mangling::{
+    mangle_enum_variant, mangle_function, mangle_global, mangle_type,
+};
 use crate::codegen::parser::Parser as CodeParser;
 use crate::codegen::type_ast::{EnumDefinition, StructDefinition};
 use crate::codegen::types::{ToCRepr, Type};
@@ -21,26 +25,29 @@ pub struct Compiler {
     libs: Vec<String>,
     source_paths: Vec<(PathBuf, ModulePath)>,
     inferencer: TypeInferencer,
+    current_module: ModulePath,
 }
 
 fn parse_source_path(s: &str) -> Option<(PathBuf, ModulePath)> {
     let parts: Vec<&str> = s.split(':').collect();
     match parts.as_slice() {
-        [dir] if !dir.is_empty() => Some((PathBuf::from(dir), Vec::new())),
+        [dir] if !dir.is_empty() => Some((PathBuf::from(dir), ModulePath::new())),
         [dir, prefix] if !dir.is_empty() && !prefix.is_empty() => {
-            let path: ModulePath = prefix.split('.').map(String::from).collect();
+            let path = ModulePath(prefix.split('.').map(String::from).collect());
             Some((PathBuf::from(dir), path))
         }
         _ => None,
     }
 }
 
-fn strip_module_prefix(path: &[String], prefix: &[String]) -> Option<ModulePath> {
+fn strip_module_prefix(path: &ModulePath, prefix: &ModulePath) -> Option<ModulePath> {
     if prefix.is_empty() {
-        return Some(path.to_vec());
+        return Some(path.clone());
     }
-    if path.len() >= prefix.len() && &path[..prefix.len()] == prefix {
-        Some(path[prefix.len()..].to_vec())
+    let path_inner = path.as_slice();
+    let prefix_inner = prefix.as_slice();
+    if path_inner.len() >= prefix_inner.len() && &path_inner[..prefix_inner.len()] == prefix_inner {
+        Some(ModulePath(path_inner[prefix_inner.len()..].to_vec()))
     } else {
         None
     }
@@ -174,7 +181,9 @@ fn determine_module_path(file: &Path, source_paths: &[(PathBuf, ModulePath)]) ->
             }
         }
     }
-    vec![file.file_stem().unwrap().to_string_lossy().to_string()]
+    ModulePath(vec![
+        file.file_stem().unwrap().to_string_lossy().to_string(),
+    ])
 }
 
 impl Compiler {
@@ -194,16 +203,60 @@ impl Compiler {
         Ok(modules)
     }
 
+    fn get_stdlib_paths() -> Vec<(PathBuf, ModulePath)> {
+        // Check KIT_STD_PATH env var
+        if let Ok(std_path) = std::env::var("KIT_STD_PATH") {
+            return vec![(PathBuf::from(std_path), ModulePath::new())];
+        }
+
+        // Check std/ next to executable
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                let std_dir = exe_dir.join("std");
+                if std_dir.join("kit").exists() {
+                    return vec![(std_dir, ModulePath::from_parts(&["kit"]))];
+                }
+            }
+        }
+
+        // Fall back to OS default locations
+        #[cfg(target_os = "linux")]
+        {
+            let default = PathBuf::from("/usr/lib/kit");
+            if default.exists() {
+                return vec![(default, ModulePath::from_parts(&["kit"]))];
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let default = PathBuf::from("/usr/local/lib/kit");
+            if default.exists() {
+                return vec![(default, ModulePath::from_parts(&["kit"]))];
+            }
+        }
+
+        Vec::new()
+    }
+
     pub fn new(
         files: Vec<PathBuf>,
         output: impl AsRef<Path>,
         libs: Vec<String>,
         source_paths: Vec<String>,
     ) -> Self {
-        let parsed_source_paths: Vec<(PathBuf, ModulePath)> = source_paths
+        let mut parsed_source_paths: Vec<(PathBuf, ModulePath)> = source_paths
             .iter()
             .filter_map(|sp| parse_source_path(sp))
             .collect();
+
+        // If no source paths provided, default to "src"
+        if parsed_source_paths.is_empty() {
+            parsed_source_paths.push((PathBuf::from("src"), ModulePath::new()));
+        }
+
+        // Append stdlib paths
+        parsed_source_paths.extend(Self::get_stdlib_paths());
 
         Self {
             files,
@@ -212,6 +265,7 @@ impl Compiler {
             libs,
             source_paths: parsed_source_paths,
             inferencer: TypeInferencer::new(),
+            current_module: ModulePath::new(),
         }
     }
 
@@ -365,14 +419,15 @@ impl Compiler {
         );
 
         let const_prefix = if global.is_const { "const " } else { "" };
+        let global_name = mangle_global(&self.current_module, &global.name);
 
         match &global.init {
             Some(expr) => {
                 let init_str = self.transpile_expr(expr);
-                format!("{const_prefix}{ty} {} = {init_str};", global.name)
+                format!("{const_prefix}{ty} {} = {init_str};", global_name)
             }
             None => {
-                format!("{const_prefix}{ty} {};", global.name)
+                format!("{const_prefix}{ty} {};", global_name)
             }
         }
     }
@@ -405,9 +460,11 @@ impl Compiler {
                     // Check if this named type is actually a struct definition
                     let is_struct = all_structs.iter().any(|s| s.name == *name);
                     if is_struct {
-                        format!("struct {}", name)
+                        let mangled = mangle_type(&self.current_module, name);
+                        format!("struct {}", mangled)
                     } else {
-                        c_repr.name.clone()
+                        let mangled = mangle_type(&self.current_module, name);
+                        mangled
                     }
                 } else {
                     c_repr.name.clone()
@@ -417,11 +474,8 @@ impl Compiler {
             })
             .collect();
 
-        format!(
-            "struct {} {{\n{}\n}};",
-            struct_def.name,
-            field_decls.join("\n")
-        )
+        let struct_name = mangle_type(&self.current_module, &struct_def.name);
+        format!("struct {} {{\n{}\n}};", struct_name, field_decls.join("\n"))
     }
 
     /// Lowers a Kit enum definition into its C representation.
@@ -437,6 +491,7 @@ impl Compiler {
     /// initialization in C.
     fn generate_enum_declaration(&self, enum_def: &EnumDefinition) -> String {
         let mut output = String::new();
+        let enum_type_name = mangle_type(&self.current_module, &enum_def.name);
 
         // Check if all variants are simple (no arguments)
         let all_simple = enum_def.variants.iter().all(|v| v.args.is_empty());
@@ -446,26 +501,36 @@ impl Compiler {
             let variants: Vec<String> = enum_def
                 .variants
                 .iter()
-                .map(|v| format!("    {}_{}", enum_def.name, v.name))
+                .map(|v| {
+                    format!(
+                        "    {}",
+                        mangle_enum_variant(&self.current_module, &enum_def.name, &v.name)
+                    )
+                })
                 .collect();
 
             output.push_str(&format!(
                 "typedef enum {{\n{}\n}} {};\n\n",
                 variants.join(",\n"),
-                enum_def.name
+                enum_type_name
             ));
         } else {
             // Complex enum: generate C enum for discriminant
             let discriminant_variants: Vec<String> = enum_def
                 .variants
                 .iter()
-                .map(|v| format!("    {}_{}", enum_def.name, v.name))
+                .map(|v| {
+                    format!(
+                        "    {}",
+                        mangle_enum_variant(&self.current_module, &enum_def.name, &v.name)
+                    )
+                })
                 .collect();
 
             output.push_str(&format!(
                 "typedef enum {{\n{}\n}} {}_Discriminant;\n\n",
                 discriminant_variants.join(",\n"),
-                enum_def.name
+                enum_type_name
             ));
 
             // Generate variant data structs
@@ -489,7 +554,7 @@ impl Compiler {
                 output.push_str(&format!(
                     "typedef struct {{\n{}\n}} {}_{}_data;\n\n",
                     field_decls.join("\n"),
-                    enum_def.name,
+                    enum_type_name,
                     v.name
                 ));
             }
@@ -502,7 +567,7 @@ impl Compiler {
                 .map(|v| {
                     format!(
                         "    {}_{}_data {};",
-                        enum_def.name,
+                        enum_type_name,
                         v.name,
                         v.name.to_lowercase()
                     )
@@ -511,13 +576,13 @@ impl Compiler {
 
             let struct_body = format!(
                 "    {}_Discriminant _discriminant;\n    union {{\n{}\n    }} _variant;",
-                enum_def.name,
+                enum_type_name,
                 union_fields.join("\n")
             );
 
             output.push_str(&format!(
                 "typedef struct {{\n{}\n}} {};\n\n",
-                struct_body, enum_def.name
+                struct_body, enum_type_name
             ));
         }
 
@@ -556,14 +621,12 @@ impl Compiler {
                 .collect();
 
             output.push_str(&format!(
-                "{} {}_{}_new({}) {{\n    {} result;\n    result._discriminant = {}_{};\n{}\n    return result;\n}}\n\n",
-                enum_def.name,
-                enum_def.name,
-                v.name,
+                "{} {}_new({}) {{\n    {} result;\n    result._discriminant = {};\n{}\n    return result;\n}}\n\n",
+                enum_type_name,
+                mangle_enum_variant(&self.current_module, &enum_def.name, &v.name),
                 params.join(", "),
-                enum_def.name,
-                enum_def.name,
-                v.name,
+                enum_type_name,
+                mangle_enum_variant(&self.current_module, &enum_def.name, &v.name),
                 assignments.join("\n")
             ));
         }
@@ -583,6 +646,8 @@ impl Compiler {
                 .unwrap_or_else(|| "void".to_string())
         };
 
+        let func_name = func.name.clone(); // Skip name mangling for now
+
         let params = func
             .params
             .iter()
@@ -591,7 +656,13 @@ impl Compiler {
                     .inferencer
                     .store
                     .resolve(p.ty)
-                    .map(|t| t.to_c_repr().name)
+                    .map(|t| {
+                        if let Type::Named(type_name) = &t {
+                            mangle_type(&self.current_module, type_name)
+                        } else {
+                            t.to_c_repr().name
+                        }
+                    })
                     .or_else(|_| p.annotation.as_ref().map(|t| t.to_c_repr().name).ok_or(()))
                     .unwrap_or("void*".to_string()); // Fallback
                 format!("{} {}", ty_name, p.name)
@@ -615,7 +686,7 @@ impl Compiler {
             }
         }
 
-        format!("{} {}({}) {}", return_type, func.name, params, body_code)
+        format!("{} {}({}) {}", return_type, func_name, params, body_code)
     }
 
     fn transpile_block(&self, block: &Block) -> String {
@@ -631,13 +702,15 @@ impl Compiler {
                     let ty_str = self.inferencer.store.resolve(*inferred).map_or_else(
                         |_| "auto".to_string(),
                         |t| {
-                            // For Named types that are actually structs, use "struct <name>"
-                            if let Type::Named(name) = &t {
+                            // For Named types, mangle the name
+                            if let Type::Named(type_name) = &t {
                                 // Check if this named type is a struct
-                                if self.inferencer.is_struct_type(name) {
-                                    format!("struct {}", name)
+                                if self.inferencer.is_struct_type(type_name) {
+                                    let mangled = mangle_type(&self.current_module, type_name);
+                                    format!("struct {}", mangled)
                                 } else {
-                                    t.to_c_repr().name
+                                    let mangled = mangle_type(&self.current_module, type_name);
+                                    mangled
                                 }
                             } else {
                                 t.to_c_repr().name
@@ -731,10 +804,12 @@ impl Compiler {
                         .map(|a| self.transpile_expr(a))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    format!(
-                        "{}_{}_new({})",
-                        variant_info.enum_name, variant_info.variant_name, args_str
-                    )
+                    let variant_ctor = mangle_enum_variant(
+                        &self.current_module,
+                        &variant_info.enum_name,
+                        &variant_info.variant_name,
+                    );
+                    format!("{}_new({})", variant_ctor, args_str)
                 } else {
                     let args_str = args
                         .iter()
@@ -838,12 +913,13 @@ impl Compiler {
 
                 if is_simple {
                     // Simple enum: just use the discriminant constant
-                    format!("{}_{}", enum_name, variant_name)
+                    mangle_enum_variant(&self.current_module, &enum_name, &variant_name)
                 } else {
                     // Complex enum: need full struct initialization
                     format!(
-                        "{{.{} = {}_{}, ._variant = {{0}}}}",
-                        "_discriminant", enum_name, variant_name
+                        "{{.{} = {}, ._variant = {{0}}}}",
+                        "_discriminant",
+                        mangle_enum_variant(&self.current_module, &enum_name, &variant_name)
                     )
                 }
             }
@@ -863,12 +939,13 @@ impl Compiler {
                         .unwrap_or(false);
 
                     if is_simple {
-                        format!("{}_{}", enum_name, variant_name)
+                        mangle_enum_variant(&self.current_module, &enum_name, &variant_name)
                     } else {
                         // Complex enum: initialize the full struct with designated initializers
                         format!(
-                            "{{.{} = {}_{}, ._variant = {{0}}}}",
-                            "_discriminant", enum_name, variant_name
+                            "{{.{} = {}, ._variant = {{0}}}}",
+                            "_discriminant",
+                            mangle_enum_variant(&self.current_module, &enum_name, &variant_name)
                         )
                     }
                 } else {
@@ -896,7 +973,9 @@ impl Compiler {
                             .join(", ")
                     };
 
-                    format!("{}_{}_new({})", enum_name, variant_name, args_str)
+                    let variant_ctor =
+                        mangle_enum_variant(&self.current_module, &enum_name, &variant_name);
+                    format!("{}_new({})", variant_ctor, args_str)
                 }
             }
         }
@@ -918,21 +997,23 @@ impl Compiler {
         };
 
         // Entry module is the one that corresponds to self.files[0]
-        let entry_path = if let Some(f) = self.files.first() {
+        let entry_path: ModulePath = if let Some(f) = self.files.first() {
             determine_module_path(f, &self.source_paths)
         } else {
-            vec![]
+            ModulePath::new()
         };
 
         for (_path, program) in modules.into_iter() {
             // Entry module goes last, imported modules first
             if _path == entry_path {
+                // Entry module: DON'T set current_module to preserve original names
                 merged_program.includes.extend(program.includes);
                 merged_program.imports.extend(program.imports);
                 merged_program.globals.extend(program.globals);
                 merged_program.functions.extend(program.functions);
                 merged_program.structs.extend(program.structs);
                 merged_program.enums.extend(program.enums);
+                // DON'T change current_module for entry module
             } else {
                 // Put imports first
                 merged_program.includes.extend(program.includes);
@@ -944,6 +1025,7 @@ impl Compiler {
                 }
                 merged_program.structs.extend(program.structs);
                 merged_program.enums.extend(program.enums);
+                // Skip setting current_module for backward compatibility
             }
         }
 

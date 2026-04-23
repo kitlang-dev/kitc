@@ -28,3 +28,6 @@ pub mod symbols;
 
 /// Type inference engine using Hindley-Milner algorithm.
 pub mod inference;
+
+/// Name mangling utilities for module-aware C code generation.
+pub mod name_mangling;
