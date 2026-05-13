@@ -4,10 +4,8 @@ use crate::codegen::types::{BinaryOperator, UnaryOperator};
 use crate::error::CompilationError;
 use crate::{Rule, parse_error};
 
-use super::ast::{
-    Block, Expr, Function, GlobalDecl, ImportType, Include, Literal, ModuleImport, ModulePath,
-    Param, Stmt,
-};
+use super::ast::{Block, Expr, Function, GlobalDecl, Include, Literal, Param, Stmt};
+use super::module::{ImportType, ModuleImport, ModulePath};
 use super::type_ast::{EnumDefinition, EnumVariant, Field, FieldInit, StructDefinition};
 use super::types::{AssignmentOperator, Type, TypeId};
 use crate::error::CompileResult;
@@ -50,37 +48,44 @@ impl Parser {
     }
 
     pub fn parse_include(&self, pair: Pair<Rule>) -> Include {
-        // include_stmt = { "include" ~ string ~ ("=>" ~ string)? ~ ";" }
         let mut inner = pair.into_inner();
-        // The first child is the string literal representing the include path
         let path_literal_pair = inner.next().unwrap();
         let path_str = path_literal_pair.as_str();
-
-        // Strip the quotes from the string literal
         let path = path_str[1..path_str.len() - 1].to_string();
-        Include { path }
+
+        let linked_lib = inner.next().map(|lib_pair| {
+            let lib_str = lib_pair.as_str();
+            lib_str[1..lib_str.len() - 1].to_string()
+        });
+
+        match linked_lib {
+            Some(lib) => Include::with_lib(path, lib),
+            None => Include::new(path),
+        }
     }
 
     pub fn parse_import(&self, pair: Pair<Rule>) -> ModuleImport {
-        // import_stmt = { "import" ~ path ~ ("." ~ ("*" | "**"))? ~ ";" }
+        // import_stmt = { "import" ~ import_path ~ ";" }
+        // import_path = { identifier ~ ("." ~ identifier)* ~ ("." ~ ("*" | "**"))? }
         let mut inner = pair.into_inner();
+        let import_path_pair = inner.next().unwrap();
+        let full_path_str = import_path_pair.as_str();
 
-        // First child is the path
-        let path_pair = inner.next().unwrap();
-        let path_str = path_pair.as_str();
-        let path = ModulePath(path_str.split('.').map(String::from).collect());
+        // Check if the import_path has a wildcard modifier
+        let has_wildcard = full_path_str.ends_with(".*");
+        let has_double_wildcard = full_path_str.ends_with(".**");
 
-        // Check for wildcard modifier
-        let import_type = if let Some(modifier) = inner.next() {
-            match modifier.as_str() {
-                ".*" => ImportType::Wildcard,
-                ".**" => ImportType::DoubleWildcard,
-                _ => ImportType::Single,
-            }
+        let (path_str, import_type) = if has_double_wildcard {
+            let trimmed = full_path_str.trim_end_matches(".**");
+            (trimmed.to_string(), ImportType::DoubleWildcard)
+        } else if has_wildcard {
+            let trimmed = full_path_str.trim_end_matches(".*");
+            (trimmed.to_string(), ImportType::Wildcard)
         } else {
-            ImportType::Single
+            (full_path_str.to_string(), ImportType::Single)
         };
 
+        let path = ModulePath(path_str.split('.').map(String::from).collect());
         ModuleImport { path, import_type }
     }
 
@@ -118,6 +123,7 @@ impl Parser {
             return_type,
             inferred_return: None,
             body,
+            is_public: true,
         })
     }
 
@@ -421,6 +427,7 @@ impl Parser {
             inferred: TypeId::default(),
             init,
             is_const,
+            is_public: true,
         })
     }
 

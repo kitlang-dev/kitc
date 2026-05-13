@@ -324,3 +324,23 @@ fn test_nested_comments() -> Result<(), Box<dyn std::error::Error>> {
 fn test_multi_file_import() -> Result<(), Box<dyn std::error::Error>> {
     run_example_test_with_source_path("multi_file_main", "examples", None)
 }
+
+#[test]
+fn test_module_basic_import() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test_with_source_path("module_test_main", "examples", None)
+}
+
+#[test]
+fn test_module_wildcard_import() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test_with_source_path("module_test_wild_main", "examples", None)
+}
+
+#[test]
+fn test_module_double_wildcard_import() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test_with_source_path("module_test_deep_main", "examples", None)
+}
+
+#[test]
+fn test_qualified_call() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test_with_source_path("qualified_call_main", "examples", None)
+}

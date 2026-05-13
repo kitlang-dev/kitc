@@ -1,8 +1,14 @@
-use crate::codegen::ast::ModulePath;
+use crate::codegen::module::ModulePath;
 
+/// Mangle a name with its module path prefix for C code generation.
+/// Empty module paths produce unmodified names (for backward compatibility).
 pub fn mangle_name(module_path: &ModulePath, name: &str) -> String {
-    // Disabled for backward compatibility - will re-enable when module system is properly used
-    name.to_string()
+    if module_path.is_empty() {
+        name.to_string()
+    } else {
+        let prefix = module_path.join("_");
+        format!("{}_{}", prefix, name)
+    }
 }
 
 pub fn mangle_function(module_path: &ModulePath, name: &str) -> String {
@@ -39,13 +45,13 @@ mod tests {
     #[test]
     fn test_mangle_single_module() {
         let path = ModulePath(vec!["utils".to_string()]);
-        assert_eq!(mangle_name(&path, "foo"), "foo");
+        assert_eq!(mangle_name(&path, "foo"), "utils_foo");
     }
 
     #[test]
     fn test_mangle_nested_module() {
         let path = ModulePath(vec!["pkg".to_string(), "util".to_string()]);
-        assert_eq!(mangle_name(&path, "foo"), "foo");
+        assert_eq!(mangle_name(&path, "foo"), "pkg_util_foo");
     }
 
     #[test]
@@ -53,7 +59,7 @@ mod tests {
         let path = ModulePath(vec!["myapp".to_string()]);
         assert_eq!(
             mangle_enum_variant(&path, "Status", "Active"),
-            "Status_Active"
+            "myapp_Status_Active"
         );
     }
 }

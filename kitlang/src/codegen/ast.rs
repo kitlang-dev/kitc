@@ -1,13 +1,31 @@
 use crate::codegen::types::{AssignmentOperator, BinaryOperator, Type, TypeId, UnaryOperator};
 
+use super::ModulePath;
 use super::type_ast::{EnumDefinition, FieldInit, StructDefinition};
-use std::path::PathBuf;
 
 /// Represents a C header inclusion.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Include {
     /// Path to header file (e.g., "stdio.h").
     pub path: String,
+    /// Optional linked library name from `include "header.h" => "libname"`.
+    pub linked_lib: Option<String>,
+}
+
+impl Include {
+    pub fn new(path: String) -> Self {
+        Self {
+            path,
+            linked_lib: None,
+        }
+    }
+
+    pub fn with_lib(path: String, lib: String) -> Self {
+        Self {
+            path,
+            linked_lib: Some(lib),
+        }
+    }
 }
 
 /// Represents a function definition in Kit.
@@ -23,6 +41,8 @@ pub struct Function {
     pub inferred_return: Option<TypeId>,
     /// Function body as a block of statements.
     pub body: Block,
+    /// Whether this function is publicly visible to other modules.
+    pub is_public: bool,
 }
 
 /// Represents a function parameter.
@@ -110,11 +130,8 @@ pub enum Expr {
     },
     /// Unary operation.
     UnaryOp {
-        /// The unary operator.
         op: UnaryOperator,
-        /// The operand expression.
         expr: Box<Expr>,
-        /// Inferred result type.
         ty: TypeId,
     },
     /// Binary operation.
@@ -219,6 +236,8 @@ pub struct GlobalDecl {
     pub init: Option<Expr>,
     /// Whether this is a const declaration.
     pub is_const: bool,
+    /// Whether this global is publicly visible to other modules.
+    pub is_public: bool,
 }
 
 impl Literal {
@@ -255,15 +274,14 @@ impl Literal {
     }
 }
 
-/// A fully parsed Kit program.
+/// A parsed Kit module's top-level declarations (AST contents of one file).
+///
+/// This holds only the parsed declarations from a single `.kit` file.
+/// Module-level metadata (imports, includes) is stored in `Module`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Program {
-    /// The module path for this program (if known)
+    /// The module path for this program, if known.
     pub module_path: Option<ModulePath>,
-    /// C header inclusions required by the program.
-    pub includes: Vec<Include>,
-    /// Kit module imports
-    pub imports: Vec<ModuleImport>,
     /// Top-level global variable and constant declarations.
     pub globals: Vec<GlobalDecl>,
     /// Top-level function definitions.
@@ -274,64 +292,14 @@ pub struct Program {
     pub enums: Vec<EnumDefinition>,
 }
 
-/// A module path (e.g., ["pkg", "utils"] -> "pkg.utils")
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ModulePath(pub Vec<String>);
-
-impl ModulePath {
-    pub fn new() -> Self {
-        Self(Vec::new())
+impl Program {
+    pub fn empty() -> Self {
+        Self {
+            module_path: None,
+            globals: Vec::new(),
+            functions: Vec::new(),
+            structs: Vec::new(),
+            enums: Vec::new(),
+        }
     }
-
-    pub fn from_parts(parts: &[&str]) -> Self {
-        Self(parts.iter().map(|s| s.to_string()).collect())
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub fn join(&self, sep: &str) -> String {
-        self.0.join(sep)
-    }
-
-    pub fn push(&mut self, part: String) {
-        self.0.push(part);
-    }
-
-    pub fn as_slice(&self) -> &[String] {
-        &self.0
-    }
-}
-
-impl Default for ModulePath {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// The type of import statement
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum ImportType {
-    /// `import foo.bar;`
-    Single,
-    /// `import foo.bar.*;`
-    Wildcard,
-    /// `import foo.bar.**;`
-    DoubleWildcard,
-}
-
-/// Represents an import statement
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ModuleImport {
-    pub path: ModulePath,
-    pub import_type: ImportType,
-}
-
-/// Represents a loaded module
-#[derive(Clone, Debug)]
-pub struct Module {
-    pub path: ModulePath,
-    pub source_path: PathBuf,
-    pub program: Program,
 }

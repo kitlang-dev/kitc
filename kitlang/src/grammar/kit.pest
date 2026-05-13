@@ -9,9 +9,10 @@ const_kw = { "const" }
 
 program = _{ SOI ~ (import_stmt | include_stmt | function_decl | var_decl | type_def | trait_def | trait_impl | rule_set | using_stmt)* ~ EOI }
 
-import_stmt = { "import" ~ path ~ ("." ~ ("*" | "**"))? ~ ";" }
+import_stmt = { "import" ~ import_path ~ ";" }
 include_stmt = { "include" ~ string ~ ("=>" ~ string)? ~ ";" }
-path = @{ identifier ~ ("." ~ identifier)* }
+path = { identifier ~ ("." ~ identifier)* }
+import_path = { identifier ~ ("." ~ identifier)* ~ ("." ~ ("**" | "*"))? }
 
 function_decl = {
     "function" ~ identifier ~ "(" ~ params? ~ ")" ~ (":" ~ type_annotation)? ~ block
@@ -150,7 +151,7 @@ primary = {
     string
 }
 
-function_call_expr = { identifier ~ "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
+function_call_expr = { path ~ "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
 
 array_literal = { "[" ~ (expr ~ ("," ~ expr)*)? ~ "]" }
 struct_init = { "struct" ~ type_annotation ~ "{" ~ (field_init ~ ("," ~ field_init)*)? ~ "}" }

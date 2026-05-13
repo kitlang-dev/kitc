@@ -28,6 +28,18 @@ pub enum CompilationError {
     #[error("Unsupported toolchain: {0}")]
     UnsupportedToolchain(String),
 
+    #[error("Module not found: {path}")]
+    ModuleNotFound { path: String },
+
+    #[error("Circular module dependency detected: {cycle}")]
+    CircularImport { cycle: String },
+
+    #[error("Duplicate symbol '{name}' in module {module}")]
+    DuplicateSymbol { name: String, module: String },
+
+    #[error("Symbol '{name}' is private in module '{module}'")]
+    PrivateSymbol { name: String, module: String },
+
     #[error(transparent)]
     Io(std::io::Error),
 }

@@ -1,8 +1,10 @@
-//! This crate contains the core logic for the Kit language compiler,
-//! including its lexer, parser, and code generation components.
+//! Core logic for the Kit language compiler: lexing, parsing, type
+//! inference, module resolution, and C code generation.
 
+/// AST types, module system, parser, code generation, and type infrastructure.
 pub mod codegen;
 
+/// Logos-based lexer for tokenization of Kit source files.
 pub mod lexer;
 
 pub use logos;
@@ -14,4 +16,5 @@ pub use codegen::Toolchain;
 #[grammar = "grammar/kit.pest"]
 pub struct KitParser;
 
-mod error;
+/// Compilation error types.
+pub(crate) mod error;

@@ -1,33 +1,45 @@
-//! The `codegen` module is responsible for generating executable code
-//! from the parsed Kit Abstract Syntax Tree (AST).
-//!
-//! It orchestrates compilation process, translating AST into an
-//! intermediate representation and then into target-specific machine code.
+//! Code generation pipeline: parsing, type inference, module resolution,
+//! and C code generation from Kit AST.
 
+/// Core AST data types: expressions, statements, functions, and programs.
 pub mod ast;
+
+/// C compiler toolchain detection and linker flag construction.
 pub mod compiler;
+
+/// Module system: paths, dependency graphs, registries, and name resolution.
+pub mod module;
+
+/// PEG-based parser that converts Kit source text into AST.
 pub mod parser;
+
+/// Type-level AST: struct, enum, and field definitions.
 pub mod type_ast;
-pub use ast::{Block, Expr, Function, Include, Literal, Param, Program, Stmt};
+
+// -- Re-exports --
+
+pub use ast::{Block, Expr, Function, GlobalDecl, Include, Literal, Param, Program, Stmt};
 pub use compiler::Toolchain;
+pub use module::{
+    DependencyEdge, DependencyGraph, ImportType, Module, ModuleImport, ModuleNode, ModulePath,
+    ModuleRegistry, NameBinding,
+};
 pub use type_ast::{Field, FieldInit, StructDefinition};
 
-/// Handles the initial parsing of Kitlang source files, constructs
-/// Abstract Syntax Tree (AST), and orchestrates generation of C code
-/// from this AST.
+/// Compiler orchestration: module loading, graph building, and C compilation.
 pub mod frontend;
 
-/// Defines the core data structures used throughout the code generation process,
-/// including representations for Kitlang types, C types, functions, statements,
-/// expressions, and literals. It also handles the conversion logic between Kitlang
-/// and C type systems.
-pub mod types;
-
-/// Symbol table for tracking variables and functions during type inference.
-pub mod symbols;
-
-/// Type inference engine using Hindley-Milner algorithm.
+/// Hindley-Milner type inference engine.
 pub mod inference;
 
-/// Name mangling utilities for module-aware C code generation.
+/// Module-aware name mangling for C identifier generation.
 pub mod name_mangling;
+
+/// Symbol table for tracking variables and functions during inference.
+pub mod symbols;
+
+/// C code generation (transpilation) pass: Kit AST to C source.
+pub mod transpile;
+
+/// Type system representation and C type mapping.
+pub mod types;
