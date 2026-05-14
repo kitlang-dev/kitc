@@ -10,30 +10,38 @@ use crate::error::{CompilationError, CompileResult};
 pub struct ModulePath(pub Vec<String>);
 
 impl ModulePath {
+    /// Create a new empty module path.
     pub fn new() -> Self {
         Self(Vec::new())
     }
 
+    /// Create a module path from a slice of string parts.
     pub fn from_parts(parts: &[&str]) -> Self {
         Self(parts.iter().map(|s| s.to_string()).collect())
     }
 
+    /// Returns `true` if this path has no components.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
+    /// Join the path components with the given separator.
     pub fn join(&self, sep: &str) -> String {
         self.0.join(sep)
     }
 
+    /// Append a single component to the end of this path.
     pub fn push(&mut self, part: String) {
         self.0.push(part);
     }
 
+    /// Returns a slice over the underlying components.
     pub fn as_slice(&self) -> &[String] {
         &self.0
     }
 
+    /// Return the parent path (all components except the last).
+    /// Returns an empty path if there is only one or zero components.
     pub fn parent(&self) -> Self {
         if self.0.len() <= 1 {
             Self::new()
@@ -42,6 +50,8 @@ impl ModulePath {
         }
     }
 
+    /// Returns `true` if this path starts with the given prefix.
+    /// An empty prefix matches everything.
     pub fn starts_with(&self, other: &Self) -> bool {
         if other.is_empty() {
             return true;
@@ -98,11 +108,14 @@ impl ModuleNode {
     }
 }
 
-/// Directed edge representing a dependency between modules.
+/// A directed edge representing that module `from` depends on module `to`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DependencyEdge {
+    /// Module making the dependency.
     pub from: ModulePath,
+    /// Module being depended upon.
     pub to: ModulePath,
+    /// Kind of import (single, wildcard, double-wildcard).
     pub import_type: ImportType,
 }
 
@@ -116,6 +129,7 @@ pub struct DependencyGraph {
 }
 
 impl DependencyGraph {
+    /// Create an empty dependency graph.
     pub fn new() -> Self {
         Self {
             nodes: HashMap::new(),
@@ -125,6 +139,7 @@ impl DependencyGraph {
         }
     }
 
+    /// Insert a module node into the graph.
     pub fn add_node(&mut self, node: ModuleNode) {
         let path = node.path.clone();
         self.nodes.entry(path.clone()).or_insert(node);
@@ -132,6 +147,7 @@ impl DependencyGraph {
         self.reverse_adjacency.entry(path).or_default();
     }
 
+    /// Insert a directed edge into the graph (no-op if from == to).
     pub fn add_edge(&mut self, from: ModulePath, to: ModulePath, import_type: ImportType) {
         if from == to {
             return;
@@ -158,6 +174,7 @@ impl DependencyGraph {
         self.nodes.get(path).map(|n| &n.source_path)
     }
 
+    /// All modules that `path` directly depends on.
     pub fn dependencies_of(&self, path: &ModulePath) -> Vec<&ModulePath> {
         self.adjacency
             .get(path)
@@ -165,6 +182,7 @@ impl DependencyGraph {
             .unwrap_or_default()
     }
 
+    /// All modules that directly depend on `path`.
     pub fn dependents_of(&self, path: &ModulePath) -> Vec<&ModulePath> {
         self.reverse_adjacency
             .get(path)
@@ -172,6 +190,7 @@ impl DependencyGraph {
             .unwrap_or_default()
     }
 
+    /// Returns `true` if `path` has no outgoing edges (no dependencies).
     pub fn is_leaf_module(&self, path: &ModulePath) -> bool {
         self.adjacency
             .get(path)
@@ -183,12 +202,13 @@ impl DependencyGraph {
         self.nodes.len()
     }
 
+    /// All module paths stored in this graph.
     pub fn all_paths(&self) -> Vec<ModulePath> {
         self.nodes.keys().cloned().collect()
     }
 
-    /// Topological sort using Kahn's algorithm with cycle detection.
-    /// Returns modules in dependency-first order (dependencies before dependents).
+    /// Sort modules so dependencies come before dependents.
+    /// Returns `Err(CircularImport)` if the graph contains a cycle.
     pub fn topological_sort(&self) -> CompileResult<Vec<ModulePath>> {
         let mut out_degree: HashMap<&ModulePath, usize> = HashMap::new();
         for path in self.nodes.keys() {
@@ -208,7 +228,9 @@ impl DependencyGraph {
         }
 
         let mut sorted: Vec<ModulePath> = Vec::new();
+        let mut in_result: HashSet<&ModulePath> = HashSet::new();
         while let Some(path) = queue.pop_front() {
+            in_result.insert(path);
             sorted.push(path.clone());
             self.dequeue_dependents(path, &mut out_degree, &mut queue);
         }
@@ -217,7 +239,7 @@ impl DependencyGraph {
             let missing: Vec<String> = self
                 .nodes
                 .keys()
-                .filter(|p| !sorted.contains(p))
+                .filter(|p| !in_result.contains(p))
                 .map(|p| p.to_string())
                 .collect();
             return Err(CompilationError::CircularImport {
@@ -248,7 +270,8 @@ impl DependencyGraph {
         }
     }
 
-    /// Detect and return any cycles in the dependency graph.
+    /// Returns all directed cycles in the dependency graph.
+    /// Each cycle is represented as a list of module paths forming a closed loop.
     pub fn detect_cycles(&self) -> Vec<Vec<ModulePath>> {
         let mut cycles = Vec::new();
         let mut visited = HashSet::new();
@@ -309,7 +332,7 @@ pub enum NameBinding {
     Extern,
 }
 
-/// A map from simple names to their bindings within a module namespace.
+/// Stores name bindings for a single module's scope.
 #[derive(Clone, Debug, Default)]
 pub struct BindingTable {
     bindings: HashMap<String, NameBinding>,
@@ -322,13 +345,18 @@ impl BindingTable {
         }
     }
 
+    /// Insert a name binding; returns an error if the name already exists with a different binding.
     pub fn insert(&mut self, name: String, binding: NameBinding) -> Result<(), CompilationError> {
         if let Some(existing) = self.bindings.get(&name)
             && *existing != binding
         {
+            let module_str = match existing {
+                NameBinding::Module(p) => p.to_string(),
+                NameBinding::Extern => "extern".to_string(),
+            };
             return Err(CompilationError::DuplicateSymbol {
                 name,
-                module: format!("{:?}", existing),
+                module: module_str,
             });
         }
         self.bindings.insert(name, binding);
@@ -385,6 +413,7 @@ pub struct ModuleRegistry {
 }
 
 impl ModuleRegistry {
+    /// Create an empty registry with no modules.
     pub fn new() -> Self {
         Self {
             modules: HashMap::new(),
@@ -394,6 +423,8 @@ impl ModuleRegistry {
         }
     }
 
+    /// Register a module and its declarations into the registry.
+    /// Modules are looked up by path; duplicate paths are overwritten.
     pub fn register(&mut self, module: Module) {
         let path = module.path.clone();
         let source_path = module.source_path.clone();
@@ -433,10 +464,13 @@ impl ModuleRegistry {
         Ok(())
     }
 
+    /// Look up a name binding registered with `register_module_binding`.
     pub fn lookup_binding(&self, name: &str) -> Option<&NameBinding> {
         self.bindings.get(name)
     }
 
+    /// Find which module defines a given declaration name.
+    /// Prefers the current module if it also defines the name.
     pub fn find_module_for_declaration(
         &self,
         name: &str,
@@ -477,6 +511,8 @@ impl ModuleRegistry {
         }
     }
 
+    /// Finalize the dependency graph by adding edges from registered import statements.
+    /// Returns `Err(CircularImport)` if a cycle is detected.
     pub fn finalize_graph(&mut self) -> CompileResult<()> {
         let paths: Vec<ModulePath> = self.modules.keys().cloned().collect();
         for path in &paths {
@@ -527,10 +563,12 @@ impl ModuleRegistry {
         self.graph.topological_sort()
     }
 
+    /// All registered modules (borrowed references).
     pub fn all_modules(&self) -> Vec<&Module> {
         self.modules.values().collect()
     }
 
+    /// All registered modules (owned values).
     pub fn into_modules(self) -> Vec<Module> {
         self.modules.into_values().collect()
     }
@@ -539,6 +577,7 @@ impl ModuleRegistry {
         self.modules.len()
     }
 
+    /// Collect all unique include directives across all modules.
     pub fn collect_all_includes(&self) -> Vec<Include> {
         let mut seen = HashSet::new();
         let mut result = Vec::new();

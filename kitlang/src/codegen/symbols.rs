@@ -42,6 +42,7 @@ impl Default for SymbolTable {
 }
 
 impl SymbolTable {
+    /// Create an empty symbol table.
     pub fn new() -> Self {
         Self {
             globals: HashMap::new(),

@@ -10,28 +10,17 @@ use super::type_ast::{EnumDefinition, EnumVariant, Field, FieldInit, StructDefin
 use super::types::{AssignmentOperator, Type, TypeId};
 use crate::error::CompileResult;
 
-use std::path::PathBuf;
 use std::str::FromStr;
 
 #[derive(Default, Debug)]
-pub struct Parser {
-    _current_file: Option<PathBuf>,
-    _source_content: String,
-}
+pub struct Parser {}
 
 impl Parser {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn with_file(file: PathBuf) -> Self {
-        let source_content = std::fs::read_to_string(&file).unwrap_or_else(|_| String::new());
-
-        Self {
-            _current_file: Some(file),
-            _source_content: source_content,
-        }
-    }
+    // --- Parsing helpers ---
 
     /// Extract the first identifier from a pair's children (e.g., variable name, field name)
     fn extract_first_identifier(pair: Pair<'_, Rule>) -> Option<String> {
@@ -47,6 +36,9 @@ impl Parser {
             .any(|p| p.as_rule() == Rule::const_kw)
     }
 
+    // --- Public parsing API (called by the compiler pipeline) ---
+
+    /// Parse an `include` rule into an `Include`.
     pub fn parse_include(&self, pair: Pair<Rule>) -> Include {
         let mut inner = pair.into_inner();
         let path_literal_pair = inner.next().unwrap();
@@ -64,6 +56,7 @@ impl Parser {
         }
     }
 
+    /// Parse an `import` rule into a `ModuleImport`, detecting single/wildcard/double-wildcard.
     pub fn parse_import(&self, pair: Pair<Rule>) -> ModuleImport {
         // import_stmt = { "import" ~ import_path ~ ";" }
         // import_path = { identifier ~ ("." ~ identifier)* ~ ("." ~ ("*" | "**"))? }
@@ -89,6 +82,7 @@ impl Parser {
         ModuleImport { path, import_type }
     }
 
+    /// Parse a `function_decl` rule into a `Function`.
     pub fn parse_function(&self, pair: Pair<Rule>) -> CompileResult<Function> {
         let mut inner = pair.into_inner();
 
@@ -127,6 +121,7 @@ impl Parser {
         })
     }
 
+    /// Parse a `struct_def` rule into a `StructDefinition`.
     pub fn parse_struct_def(&self, pair: Pair<Rule>) -> CompileResult<StructDefinition> {
         // struct_def = { "struct" ~ identifier ~ type_params? ~ "{" ~ (var_decl)* ~ "}" }
         let mut inner = pair.into_inner();
@@ -163,7 +158,7 @@ impl Parser {
         Ok(StructDefinition { name, fields })
     }
 
-    /// Parse a struct definition from a type_def rule wrapper
+    /// Parse a struct definition from a `type_def` wrapper by extracting the inner `struct_def`.
     pub fn parse_struct_def_from_type_def(
         &self,
         pair: Pair<Rule>,
@@ -183,6 +178,7 @@ impl Parser {
         self.parse_struct_def(struct_def_pair)
     }
 
+    /// Parse an `enum_def` rule into an `EnumDefinition`.
     pub fn parse_enum_def(&self, pair: Pair<Rule>) -> CompileResult<EnumDefinition> {
         let mut inner = pair.into_inner();
 
@@ -213,6 +209,7 @@ impl Parser {
         Ok(EnumDefinition { name, variants })
     }
 
+    /// Parse an enum definition from a `type_def` wrapper by extracting the inner `enum_def`.
     pub fn parse_enum_def_from_type_def(&self, pair: Pair<Rule>) -> CompileResult<EnumDefinition> {
         let mut found_enum = None;
         for child in pair.into_inner() {
@@ -404,6 +401,7 @@ impl Parser {
         })
     }
 
+    /// Parse a top-level `var_decl` rule into a `GlobalDecl`.
     pub fn parse_global_var_decl(&self, pair: Pair<Rule>) -> CompileResult<GlobalDecl> {
         // Parse a global variable or constant declaration at module level
         let name = Self::extract_first_identifier(pair.clone())

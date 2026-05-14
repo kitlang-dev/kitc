@@ -15,24 +15,21 @@ use crate::codegen::types::{ToCRepr, Type, TypeId};
 use crate::error::{CompilationError, CompileResult};
 
 use super::ast::Param;
+use super::inference::TypeInferencer;
 
-/// Collect the set of C headers needed by all types referenced in a program.
-fn collect_type_headers(
-    inferencer: &crate::codegen::inference::TypeInferencer,
-    prog: &Program,
-) -> HashSet<String> {
-    let mut headers = HashSet::new();
-    let mut add = |t: &Type| {
-        for h in t.to_c_repr().headers {
-            headers.insert(h);
-        }
-    };
+/// Walk all types referenced in a program and invoke `f` for each one.
+/// Returns `Some(T)` for each type, with `None` on resolution failure.
+// TODO: give Func a proper name
+fn visit_program_types(inferencer: &TypeInferencer, prog: &Program, mut f: impl FnMut(&Type)) {
+    fn emit(f: &mut impl FnMut(&Type), ty: &Type) {
+        f(ty);
+    }
     for s in &prog.structs {
-        for f in &s.fields {
-            if let Ok(ty) = inferencer.store.resolve(f.ty) {
-                add(&ty);
-            } else if let Some(a) = &f.annotation {
-                add(a);
+        for field in &s.fields {
+            if let Ok(ty) = inferencer.store.resolve(field.ty) {
+                emit(&mut f, &ty);
+            } else if let Some(ref ann) = field.annotation {
+                emit(&mut f, ann);
             }
         }
     }
@@ -40,41 +37,54 @@ fn collect_type_headers(
         for v in &e.variants {
             for a in &v.args {
                 if let Ok(ty) = inferencer.store.resolve(a.ty) {
-                    add(&ty);
-                } else if let Some(ann) = &a.annotation {
-                    add(ann);
+                    emit(&mut f, &ty);
+                } else if let Some(ref ann) = a.annotation {
+                    emit(&mut f, ann);
                 }
             }
         }
     }
     for g in &prog.globals {
         if let Ok(ty) = inferencer.store.resolve(g.inferred) {
-            add(&ty);
+            emit(&mut f, &ty);
         }
     }
-    for f in &prog.functions {
-        if let Some(id) = f.inferred_return {
+    for func in &prog.functions {
+        if let Some(id) = func.inferred_return {
             if let Ok(ty) = inferencer.store.resolve(id) {
-                add(&ty);
+                emit(&mut f, &ty);
             }
-        } else if let Some(r) = &f.return_type {
-            add(r);
+        } else if let Some(ref r) = func.return_type {
+            emit(&mut f, r);
         }
-        for p in &f.params {
+        for p in &func.params {
             if let Ok(ty) = inferencer.store.resolve(p.ty) {
-                add(&ty);
-            } else if let Some(a) = &p.annotation {
-                add(a);
+                emit(&mut f, &ty);
+            } else if let Some(ref ann) = p.annotation {
+                emit(&mut f, ann);
             }
         }
-        for s in &f.body.stmts {
-            if let Stmt::VarDecl { inferred, .. } = s
+        for stmt in &func.body.stmts {
+            if let Stmt::VarDecl { inferred, .. } = stmt
                 && let Ok(ty) = inferencer.store.resolve(*inferred)
             {
-                add(&ty);
+                emit(&mut f, &ty);
             }
         }
     }
+}
+
+/// Collect the set of C headers needed by all types referenced in a program.
+fn collect_type_headers(
+    inferencer: &crate::codegen::inference::TypeInferencer,
+    prog: &Program,
+) -> HashSet<String> {
+    let mut headers = HashSet::new();
+    visit_program_types(inferencer, prog, |t| {
+        for h in t.to_c_repr().headers {
+            headers.insert(h);
+        }
+    });
     headers
 }
 
@@ -85,7 +95,7 @@ fn collect_type_headers_and_decls(
 ) -> (HashSet<String>, Vec<String>) {
     let mut headers = HashSet::new();
     let mut decls: Vec<String> = Vec::new();
-    let mut add = |t: &Type| {
+    visit_program_types(inferencer, prog, |t| {
         let c = t.to_c_repr();
         for h in c.headers {
             headers.insert(h);
@@ -95,65 +105,15 @@ fn collect_type_headers_and_decls(
         {
             decls.push(d);
         }
-    };
-    for s in &prog.structs {
-        for f in &s.fields {
-            if let Ok(ty) = inferencer.store.resolve(f.ty) {
-                add(&ty);
-            } else if let Some(a) = &f.annotation {
-                add(a);
-            }
-        }
-    }
-    for e in &prog.enums {
-        for v in &e.variants {
-            for a in &v.args {
-                if let Ok(ty) = inferencer.store.resolve(a.ty) {
-                    add(&ty);
-                } else if let Some(ann) = &a.annotation {
-                    add(ann);
-                }
-            }
-        }
-    }
-    for g in &prog.globals {
-        if let Ok(ty) = inferencer.store.resolve(g.inferred) {
-            add(&ty);
-        }
-    }
-    for f in &prog.functions {
-        if let Some(id) = f.inferred_return {
-            if let Ok(ty) = inferencer.store.resolve(id) {
-                add(&ty);
-            }
-        } else if let Some(r) = &f.return_type {
-            add(r);
-        }
-        for p in &f.params {
-            if let Ok(ty) = inferencer.store.resolve(p.ty) {
-                add(&ty);
-            } else if let Some(a) = &p.annotation {
-                add(a);
-            }
-        }
-        for s in &f.body.stmts {
-            if let Stmt::VarDecl { inferred, .. } = s
-                && let Ok(ty) = inferencer.store.resolve(*inferred)
-            {
-                add(&ty);
-            }
-        }
-    }
+    });
     (headers, decls)
 }
 
 impl Compiler {
     /// Generate C code from the merged program and write it to the flat output path.
-    pub(crate) fn transpile_with_program(&mut self, prog: &Program) {
+    pub(crate) fn transpile_with_program(&mut self, prog: &Program) -> CompileResult<()> {
         let c_code = self.generate_flat_c_code(prog);
-        if let Err(e) = fs::write(&self.c_output, c_code) {
-            panic!("Failed to write output: {e}");
-        }
+        fs::write(&self.c_output, c_code).map_err(CompilationError::Io)
     }
 
     /// Generate C code for a single merged/entry program (flat, no module awareness).
@@ -169,7 +129,7 @@ impl Compiler {
             }
         }
         for path in &all_c_includes {
-            writeln!(out, "#include \"{}\"", path).unwrap();
+            let _ = writeln!(out, "#include \"{}\"", path);
         }
         if !all_c_includes.is_empty() {
             out.push('\n');
@@ -179,7 +139,7 @@ impl Compiler {
             collect_type_headers_and_decls(&self.inferencer, prog);
 
         for hdr in &seen_headers {
-            writeln!(out, "#include {hdr}").unwrap();
+            let _ = writeln!(out, "#include {hdr}");
         }
         out.push('\n');
 
@@ -307,20 +267,20 @@ impl Compiler {
     ) -> String {
         let mut out = String::new();
         let guard = format!("KIT_MODULE_{}_H", module.path.join("_").to_uppercase());
-        writeln!(out, "#ifndef {}", guard).unwrap();
-        writeln!(out, "#define {}", guard).unwrap();
+        let _ = writeln!(out, "#ifndef {}", guard);
+        let _ = writeln!(out, "#define {}", guard);
         out.push('\n');
 
         let seen_headers = collect_type_headers(&self.inferencer, prog);
         for hdr in &seen_headers {
-            writeln!(out, "#include {hdr}").unwrap();
+            let _ = writeln!(out, "#include {hdr}");
         }
         out.push('\n');
 
         for import in &module.imports {
             if self.registry.contains(&import.path) {
                 let dep = format!("{}.h", import.path.join("_"));
-                writeln!(out, "#include \"{}\"", dep).unwrap();
+                let _ = writeln!(out, "#include \"{}\"", dep);
             }
         }
         if !module.imports.is_empty() {
@@ -349,7 +309,7 @@ impl Compiler {
                 };
                 let gname = mangle_global(&module.path, &global.name);
                 let const_ = if global.is_const { "const " } else { "" };
-                writeln!(out, "extern {const_}{ty} {};", gname).unwrap();
+                let _ = writeln!(out, "extern {const_}{ty} {};", gname);
             }
         }
         if prog.globals.iter().any(|g| g.is_public) {
@@ -372,11 +332,11 @@ impl Compiler {
                 mangle_function(&module.path, &func.name)
             };
             let params = self.format_function_params_with_module(&func.params, &module.path);
-            writeln!(out, "{} {}({});", ret, fname, params).unwrap();
+            let _ = writeln!(out, "{} {}({});", ret, fname, params);
         }
 
         out.push('\n');
-        writeln!(out, "#endif /* {} */", guard).unwrap();
+        let _ = writeln!(out, "#endif /* {} */", guard);
         out
     }
 
@@ -385,23 +345,23 @@ impl Compiler {
         let mut out = String::new();
 
         let header = format!("{}.h", module.path.join("_"));
-        writeln!(out, "#include \"{}\"", header).unwrap();
+        let _ = writeln!(out, "#include \"{}\"", header);
 
         for import in &module.imports {
             if self.registry.contains(&import.path) {
                 let dep = format!("{}.h", import.path.join("_"));
-                writeln!(out, "#include \"{}\"", dep).unwrap();
+                let _ = writeln!(out, "#include \"{}\"", dep);
             }
         }
 
         for inc in &module.includes {
-            writeln!(out, "#include \"{}\"", inc.path).unwrap();
+            let _ = writeln!(out, "#include \"{}\"", inc.path);
         }
         out.push('\n');
 
         let seen_headers = collect_type_headers(&self.inferencer, prog);
         for hdr in &seen_headers {
-            writeln!(out, "#include {hdr}").unwrap();
+            let _ = writeln!(out, "#include {hdr}");
         }
         if !seen_headers.is_empty() {
             out.push('\n');

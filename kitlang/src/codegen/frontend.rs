@@ -290,7 +290,7 @@ fn load_module_recursive(
     registry: &mut ModuleRegistry,
     loaded: &mut HashSet<PathBuf>,
 ) -> CompileResult<()> {
-    let canonical = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+    let canonical = file.canonicalize().map_err(CompilationError::Io)?;
     if loaded.contains(&canonical) {
         return Ok(());
     }
@@ -369,9 +369,9 @@ pub(crate) fn merge_modules_for_inference(
     for path in sorted_paths {
         if let Some(module) = registry.get(path) {
             merged.globals.extend(module.program.globals.clone());
-            for f in module.program.functions.iter().rev() {
-                merged.functions.insert(0, f.clone());
-            }
+            merged
+                .functions
+                .extend(module.program.functions.iter().cloned());
             merged.structs.extend(module.program.structs.clone());
             merged.enums.extend(module.program.enums.clone());
         }
@@ -503,7 +503,7 @@ impl Compiler {
 
         let merged = merge_modules_for_inference(&self.registry, &sorted_paths);
         self.inferencer.infer_program(&mut merged.clone()).ok();
-        self.transpile_with_program(&merged);
+        self.transpile_with_program(&merged)?;
 
         let detected = Toolchain::executable_path().ok_or(CompilationError::ToolchainNotFound)?;
 

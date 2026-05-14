@@ -185,6 +185,7 @@ pub struct CompilerOptions {
 pub struct CompilerMeta(pub Toolchain);
 
 impl CompilerOptions {
+    /// Create a new `CompilerOptions` with the given toolchain metadata.
     pub const fn new(base_meta: CompilerMeta) -> Self {
         Self {
             toolchain: base_meta.0,

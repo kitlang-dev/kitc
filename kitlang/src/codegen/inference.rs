@@ -21,6 +21,7 @@ impl Default for TypeInferencer {
 }
 
 impl TypeInferencer {
+    /// Create a new type inferencer with an empty type store and symbol table.
     pub fn new() -> Self {
         Self {
             store: TypeStore::new(),

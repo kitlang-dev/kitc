@@ -11,18 +11,22 @@ pub fn mangle_name(module_path: &ModulePath, name: &str) -> String {
     }
 }
 
+/// Mangle a function name with its module path.
 pub fn mangle_function(module_path: &ModulePath, name: &str) -> String {
     mangle_name(module_path, name)
 }
 
+/// Mangle a global variable name with its module path.
 pub fn mangle_global(module_path: &ModulePath, name: &str) -> String {
     mangle_name(module_path, name)
 }
 
+/// Mangle a type name with its module path.
 pub fn mangle_type(module_path: &ModulePath, name: &str) -> String {
     mangle_name(module_path, name)
 }
 
+/// Mangle an enum variant name: combines enum name and variant name, then mangles with module path.
 pub fn mangle_enum_variant(
     module_path: &ModulePath,
     enum_name: &str,

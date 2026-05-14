@@ -313,6 +313,8 @@ pub enum Type {
 }
 
 impl Type {
+    /// Parse a Kit type name string into a `Type` variant.
+    /// Falls back to `Type::Named` for unknown types.
     pub fn from_kit(name: &str) -> Self {
         match name {
             "Int8" => Type::Int8,
@@ -337,8 +339,8 @@ impl Type {
     }
 }
 
+/// C type representation: name, optional typedef declaration, and required headers.
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Represents ..., with ...
 pub struct CRepr {
     pub name: String,
     pub declaration: Option<String>,
@@ -443,6 +445,7 @@ pub enum BinaryOperator {
 }
 
 impl BinaryOperator {
+    /// Return the C operator string for this binary operator.
     pub fn to_c_str(&self) -> &'static str {
         match self {
             BinaryOperator::Add => "+",
@@ -466,6 +469,7 @@ impl BinaryOperator {
         }
     }
 
+    /// Construct a `BinaryOperator` from a Pest parse pair (matched on `Rule::*_op`).
     pub fn from_rule_pair(pair: &Pair<Rule>) -> Result<Self, CompilationError> {
         match pair.as_rule() {
             Rule::additive_op => match pair.as_str() {
@@ -519,6 +523,7 @@ pub enum UnaryOperator {
 }
 
 impl UnaryOperator {
+    /// Return the C operator string for this unary operator.
     pub fn to_c_str(&self) -> &'static str {
         match self {
             UnaryOperator::Neg => "-",
@@ -570,6 +575,7 @@ pub enum AssignmentOperator {
 }
 
 impl AssignmentOperator {
+    /// Return the C operator string for this assignment operator.
     pub fn to_c_str(&self) -> &'static str {
         match self {
             AssignmentOperator::Assign => "=",
@@ -586,6 +592,7 @@ impl AssignmentOperator {
         }
     }
 
+    /// Construct an `AssignmentOperator` from a Pest parse pair.
     pub fn from_rule_pair(pair: &Pair<Rule>) -> Result<Self, CompilationError> {
         match pair.as_str() {
             "=" => Ok(AssignmentOperator::Assign),

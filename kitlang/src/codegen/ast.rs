@@ -13,6 +13,7 @@ pub struct Include {
 }
 
 impl Include {
+    /// Create an include without an associated library.
     pub fn new(path: String) -> Self {
         Self {
             path,
@@ -20,6 +21,7 @@ impl Include {
         }
     }
 
+    /// Create an include with an associated library name (passed as `-l` to the linker).
     pub fn with_lib(path: String, lib: String) -> Self {
         Self {
             path,
@@ -241,7 +243,8 @@ pub struct GlobalDecl {
 }
 
 impl Literal {
-    /// Converts the literal to its C representation string.
+    /// Convert this literal to its C representation.
+    /// Handles float suffixes, string escaping, and NULL for null pointers.
     #[must_use]
     pub fn to_c(&self) -> String {
         match self {
@@ -293,6 +296,7 @@ pub struct Program {
 }
 
 impl Program {
+    /// Create an empty program with no declarations.
     pub fn empty() -> Self {
         Self {
             module_path: None,
