@@ -6,11 +6,13 @@ use std::process::Command;
 
 use pest::Parser;
 
-use crate::codegen::ast::{Include, Program};
-use crate::codegen::compiler::{CompilerMeta, CompilerOptions, Toolchain};
-use crate::codegen::inference::TypeInferencer;
-use crate::codegen::module::{ImportType, Module, ModuleImport, ModulePath, ModuleRegistry};
-use crate::codegen::parser::Parser as CodeParser;
+use crate::codegen::{
+    ast::{Include, Program},
+    compiler::{CompilerMeta, CompilerOptions, Toolchain},
+    inference::TypeInferencer,
+    module::{ImportType, Module, ModuleImport, ModulePath, ModuleRegistry},
+    parser::Parser as CodeParser,
+};
 use crate::error::CompileResult;
 use crate::{KitParser, Rule, error::CompilationError};
 
@@ -76,30 +78,33 @@ fn find_module_file(path: &ModulePath, source_paths: &[(PathBuf, ModulePath)]) -
 
 /// Determine the module path for a given file path by matching against source paths.
 fn determine_module_path(file: &Path, source_paths: &[(PathBuf, ModulePath)]) -> ModulePath {
-    if let Some(parent) = file.parent() {
-        for (dir, prefix) in source_paths {
-            if let Ok(rel) = parent.strip_prefix(dir) {
-                let mut path = prefix.clone();
-                for component in rel.iter() {
-                    if component.to_string_lossy() != "_mod.kit" {
-                        path.push(component.to_string_lossy().to_string());
-                    }
-                }
-                if let Some(stem) = file.file_stem() {
-                    let stem_str = stem.to_string_lossy().to_string();
-                    if stem_str != "_mod" {
-                        path.push(stem_str);
-                    }
-                }
-                return path;
-            }
-        }
-    }
-    ModulePath(vec![
-        file.file_stem().unwrap().to_string_lossy().to_string(),
-    ])
-}
+    let stem = file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
 
+    let Some(parent) = file.parent() else {
+        return ModulePath(vec![stem.to_owned()]);
+    };
+
+    for (dir, prefix) in source_paths {
+        let Ok(rel) = parent.strip_prefix(dir) else {
+            continue;
+        };
+
+        let mut parts = prefix.0.clone();
+
+        parts.extend(rel.iter().filter_map(|c| c.to_str()).map(str::to_owned));
+
+        if stem != "_mod" {
+            parts.push(stem.to_owned());
+        }
+
+        return ModulePath(parts);
+    }
+
+    ModulePath(vec![stem.to_owned()])
+}
 /// Collect all `.kit` file paths in a directory (non-recursive), excluding `prelude.kit`.
 fn collect_kit_files_in_dir(dir: &Path, base_path: &ModulePath) -> Vec<ModulePath> {
     let Ok(entries) = fs::read_dir(dir) else {
