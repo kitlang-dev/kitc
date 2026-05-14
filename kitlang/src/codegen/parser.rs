@@ -20,13 +20,11 @@ impl Parser {
         Self::default()
     }
 
-    // --- Parsing helpers ---
-
     /// Extract the first identifier from a pair's children (e.g., variable name, field name)
     fn extract_first_identifier(pair: Pair<'_, Rule>) -> Option<String> {
         pair.into_inner()
             .find(|p| p.as_rule() == Rule::identifier)
-            .map(|p| p.as_str().to_string())
+            .map(|p| p.to_string())
     }
 
     /// Check if a var_decl uses the 'const' keyword
@@ -35,8 +33,6 @@ impl Parser {
             .into_inner()
             .any(|p| p.as_rule() == Rule::const_kw)
     }
-
-    // --- Public parsing API (called by the compiler pipeline) ---
 
     /// Parse an `include` rule into an `Include`.
     pub fn parse_include(&self, pair: Pair<Rule>) -> Include {
@@ -58,13 +54,14 @@ impl Parser {
 
     /// Parse an `import` rule into a `ModuleImport`, detecting single/wildcard/double-wildcard.
     pub fn parse_import(&self, pair: Pair<Rule>) -> ModuleImport {
-        // import_stmt = { "import" ~ import_path ~ ";" }
-        // import_path = { identifier ~ ("." ~ identifier)* ~ ("." ~ ("*" | "**"))? }
+        let span = pair.as_span();
+        let start = span.start();
+        let end = span.end();
+
         let mut inner = pair.into_inner();
         let import_path_pair = inner.next().unwrap();
         let full_path_str = import_path_pair.as_str();
 
-        // Check if the import_path has a wildcard modifier
         let has_wildcard = full_path_str.ends_with(".*");
         let has_double_wildcard = full_path_str.ends_with(".**");
 
@@ -79,35 +76,40 @@ impl Parser {
         };
 
         let path = ModulePath(path_str.split('.').map(String::from).collect());
-        ModuleImport { path, import_type }
+        ModuleImport::with_span(path, import_type, (start, end))
     }
 
     /// Parse a `function_decl` rule into a `Function`.
     pub fn parse_function(&self, pair: Pair<Rule>) -> CompileResult<Function> {
         let mut inner = pair.into_inner();
 
-        // SAFETY: Grammar guarantees function name exists as first child
-        let name = inner.next().unwrap().as_str().to_string();
+        // Extract is_public from metadata_and_modifiers, if present
+        let is_public = match inner.peek() {
+            Some(p) if p.as_rule() == Rule::metadata_and_modifiers => {
+                let modifiers = inner.next().unwrap(); // safe: peeked above
+                !modifiers
+                    .into_inner()
+                    .any(|c| c.as_rule() == Rule::modifier && c.as_str() == "private")
+            }
+            _ => true,
+        };
+
+        // Function name is always next
+        let name = inner
+            .next()
+            .ok_or_else(|| CompilationError::ParseError("function missing name".to_string()))?
+            .to_string();
 
         let mut params: Vec<Param> = Vec::new();
         let mut return_type: Option<Type> = None;
         let mut body = Block { stmts: Vec::new() };
 
-        // consume remaining child nodes and match on their rules
         for node in inner {
             match node.as_rule() {
-                Rule::params => {
-                    params = self.parse_params(node)?;
-                }
-                Rule::type_annotation => {
-                    return_type = Some(self.parse_type(node)?);
-                }
-                Rule::block => {
-                    body = self.parse_block(node)?;
-                }
-                _ => {
-                    // skip punctuation/other tokens
-                }
+                Rule::params => params = self.parse_params(node)?,
+                Rule::type_annotation => return_type = Some(self.parse_type(node)?),
+                Rule::block => body = self.parse_block(node)?,
+                _ => {}
             }
         }
 
@@ -117,7 +119,7 @@ impl Parser {
             return_type,
             inferred_return: None,
             body,
-            is_public: true,
+            is_public,
         })
     }
 
@@ -132,7 +134,6 @@ impl Parser {
             .next()
             .filter(|p| p.as_rule() == Rule::identifier)
             .ok_or(parse_error!("struct definition missing name"))?
-            .as_str()
             .to_string();
 
         // Skip type_params if present
@@ -186,7 +187,6 @@ impl Parser {
             .next()
             .filter(|p| p.as_rule() == Rule::identifier)
             .ok_or(parse_error!("enum definition missing name"))?
-            .as_str()
             .to_string();
 
         while let Some(peek) = inner.peek() {
@@ -236,7 +236,7 @@ impl Parser {
         for child in pair.clone().into_inner() {
             match child.as_rule() {
                 Rule::identifier => {
-                    identifier_found = Some(child.as_str().to_string());
+                    identifier_found = Some(child.to_string());
                 }
                 Rule::param => {
                     let field = self.parse_param_field(child)?;
@@ -315,7 +315,7 @@ impl Parser {
             .map(|p: Pair<Rule>| {
                 let mut inner = p.into_inner();
                 // SAFETY: Grammar guarantees param has identifier and type
-                let name = inner.next().unwrap().as_str().to_string();
+                let name = inner.next().unwrap().to_string();
                 let type_node = inner.next().unwrap();
                 let ty_ann = self.parse_type(type_node)?;
                 Ok(Param {
@@ -330,7 +330,7 @@ impl Parser {
     fn parse_param_field(&self, pair: Pair<Rule>) -> CompileResult<Field> {
         // param = { identifier ~ ":" ~ type_annotation ~ ( "=" ~ expr )? }
         let mut inner = pair.into_inner();
-        let name = inner.next().unwrap().as_str().to_string();
+        let name = inner.next().unwrap().to_string();
         let type_node = inner.next().unwrap();
         let ty_ann = self.parse_type(type_node)?;
 
@@ -480,7 +480,7 @@ impl Parser {
 
         let mut else_branch = None;
         if let Some(else_pair) = inner.next() {
-            assert_eq!(else_pair.as_rule(), Rule::else_part);
+            debug_assert_eq!(else_pair.as_rule(), Rule::else_part);
             let else_content = else_pair.into_inner().next().unwrap();
             let else_block = match else_content.as_rule() {
                 Rule::block => self.parse_block(else_content)?,
@@ -513,7 +513,7 @@ impl Parser {
     fn parse_for_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         // for_stmt = { "for" ~ identifier ~ "in" ~ expr ~ block }
         let mut inner = pair.into_inner();
-        let var = inner.next().unwrap().as_str().to_string();
+        let var = inner.next().unwrap().to_string();
         let iter = self.parse_expr(inner.next().unwrap())?;
         let body = self.parse_block(inner.next().unwrap())?;
         Ok(Stmt::For { var, iter, body })
@@ -586,10 +586,7 @@ impl Parser {
                     other => Err(parse_error!("Unexpected rule in unary: {other:?}")),
                 }
             }
-            Rule::identifier => Ok(Expr::Identifier(
-                pair.as_str().to_string(),
-                TypeId::default(),
-            )),
+            Rule::identifier => Ok(Expr::Identifier(pair.to_string(), TypeId::default())),
             Rule::literal => {
                 // SAFETY: Grammar guarantees exactly one child in literal
                 let inner = pair.into_inner().next().unwrap();
@@ -673,10 +670,9 @@ impl Parser {
                     // Otherwise, unwrap and parse the inner rule
                     let inner_pair = inner.next().unwrap();
                     match inner_pair.as_rule() {
-                        Rule::identifier => Ok(Expr::Identifier(
-                            inner_pair.as_str().to_string(),
-                            TypeId::default(),
-                        )),
+                        Rule::identifier => {
+                            Ok(Expr::Identifier(inner_pair.to_string(), TypeId::default()))
+                        }
                         Rule::literal
                         | Rule::function_call_expr
                         | Rule::array_literal
@@ -708,7 +704,6 @@ impl Parser {
                         let field_name = field_inner
                             .next()
                             .ok_or(parse_error!("Expected field name after '.'"))?
-                            .as_str()
                             .to_string();
                         expr = Expr::FieldAccess {
                             expr: Box::new(expr),
@@ -790,7 +785,7 @@ impl Parser {
     fn parse_field_init(&self, pair: Pair<Rule>) -> CompileResult<FieldInit> {
         // field_init = { identifier ~ ":" ~ expr }
         let mut inner = pair.into_inner();
-        let name = inner.next().unwrap().as_str().to_string();
+        let name = inner.next().unwrap().to_string();
         let value = self.parse_expr(inner.next().unwrap())?;
         Ok(FieldInit { name, value })
     }

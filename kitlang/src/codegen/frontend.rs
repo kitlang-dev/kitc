@@ -204,6 +204,11 @@ fn resolve_wildcard_import(
 
 /// Parse a single `.kit` file, returning its includes, imports, and AST.
 fn parse_kit_file(file: &Path) -> CompileResult<(Vec<Include>, Vec<ModuleImport>, Program)> {
+    debug_assert!(
+        file.exists(),
+        "parse_kit_file: no such file: {}",
+        file.display()
+    );
     let input = fs::read_to_string(file).map_err(CompilationError::Io)?;
 
     let pairs = KitParser::parse(Rule::program, &input)
@@ -289,19 +294,35 @@ fn resolve_preludes(
 }
 
 /// Load a module and all its dependencies recursively into the registry.
+///
+/// Errors from module parsing are tracked in `registry.failed` to prevent
+/// cascading "dependency not found" errors. Import loading uses error accumulation
+/// (like the Haskell compiler's `forMWithErrors`) to report all failures at once.
 fn load_module_recursive(
     file: &Path,
     source_paths: &[(PathBuf, ModulePath)],
     registry: &mut ModuleRegistry,
     loaded: &mut HashSet<PathBuf>,
 ) -> CompileResult<()> {
+    debug_assert!(
+        file.exists(),
+        "module file does not exist: {}",
+        file.display()
+    );
+
     let canonical = file.canonicalize().map_err(CompilationError::Io)?;
+
     if loaded.contains(&canonical) {
         return Ok(());
     }
+
     loaded.insert(canonical.clone());
 
-    let (includes, imports, program) = parse_kit_file(file)?;
+    let (includes, imports, program) = parse_kit_file(file).inspect_err(|_| {
+        let module_path = determine_module_path(file, source_paths);
+        registry.failed.insert(module_path);
+    })?;
+
     let module_path = determine_module_path(file, source_paths);
 
     // Load preludes first (following Haskell compiler convention).
@@ -315,6 +336,9 @@ fn load_module_recursive(
         if !registry.contains(&prelude.path)
             && let Some(prelude_file) = find_module_file(&prelude.path, source_paths)
         {
+            if registry.failed.contains(&prelude.path) {
+                continue;
+            }
             load_module_recursive(&prelude_file, source_paths, registry, loaded)?;
         }
     }
@@ -347,17 +371,42 @@ fn load_module_recursive(
 
     registry.register(module);
 
-    // Recursively load imported modules
+    // Recursively load imported modules, accumulating errors like Haskell's forMWithErrors.
+    let mut errors: Vec<CompilationError> = Vec::new();
     for import in &resolved_imports {
-        if !registry.contains(&import.path) {
-            if let Some(import_file) = find_module_file(&import.path, source_paths) {
-                load_module_recursive(&import_file, source_paths, registry, loaded)?;
-            } else {
-                return Err(CompilationError::ModuleNotFound {
-                    path: import.path.to_string(),
-                });
-            }
+        if registry.contains(&import.path) {
+            continue;
         }
+        if registry.failed.contains(&import.path) {
+            errors.push(CompilationError::ModuleNotFound {
+                path: format!("{} (dependency failed to compile)", import.path),
+            });
+            continue;
+        }
+        if let Some(import_file) = find_module_file(&import.path, source_paths) {
+            if let Err(e) = load_module_recursive(&import_file, source_paths, registry, loaded) {
+                registry.failed.insert(import.path.clone());
+                errors.push(e);
+            }
+        } else {
+            errors.push(CompilationError::ModuleNotFound {
+                path: import.path.to_string(),
+            });
+        }
+    }
+
+    if errors.len() == 1 {
+        return Err(errors.into_iter().next().unwrap());
+    }
+    if !errors.is_empty() {
+        return Err(CompilationError::CompileError(format!(
+            "Multiple errors loading modules:\n{}",
+            errors
+                .iter()
+                .map(|e| format!("  - {e}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )));
     }
 
     Ok(())
@@ -477,6 +526,11 @@ impl Compiler {
 
         registry.finalize_graph()?;
         let sorted = registry.topological_sort()?;
+        debug_assert_eq!(
+            sorted.len(),
+            registry.module_count(),
+            "topological sort missed modules"
+        );
         self.registry = registry;
         Ok(sorted)
     }
@@ -506,8 +560,8 @@ impl Compiler {
 
         self.current_module = ModulePath::new();
 
-        let merged = merge_modules_for_inference(&self.registry, &sorted_paths);
-        self.inferencer.infer_program(&mut merged.clone()).ok();
+        let mut merged = merge_modules_for_inference(&self.registry, &sorted_paths);
+        self.inferencer.infer_program(&mut merged).ok();
         self.transpile_with_program(&merged)?;
 
         let detected = Toolchain::executable_path().ok_or(CompilationError::ToolchainNotFound)?;

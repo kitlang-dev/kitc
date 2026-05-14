@@ -148,11 +148,19 @@ fn test_declaration_registration() {
     );
     assert_eq!(
         registry.find_module_for_declaration("GLOBAL", &ModulePath::new()),
-        Some(mod_path)
+        Some(mod_path.clone())
     );
     assert_eq!(
         registry.find_module_for_declaration("nonexistent", &ModulePath::new()),
         None
+    );
+    assert_eq!(
+        registry.find_decl_kind("my_func", &mod_path),
+        Some(DeclKind::Function),
+    );
+    assert_eq!(
+        registry.find_decl_kind("GLOBAL", &mod_path),
+        Some(DeclKind::Global),
     );
 }
 

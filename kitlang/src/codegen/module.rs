@@ -80,18 +80,36 @@ pub enum ImportType {
     DoubleWildcard,
 }
 
-/// Represents an import statement.
+/// Represents an import statement with source location tracking.
+///
+/// Analogous to the Haskell compiler's `(ModulePath, Span)` import representation.
+/// The `span` field tracks the byte range of the import in the source file,
+/// enabling precise error messages pointing to the failing import statement.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ModuleImport {
     /// The module path being imported (e.g., `["pkg", "utils"]`).
     pub path: ModulePath,
     /// The type of import (single, wildcard, or double-wildcard).
     pub import_type: ImportType,
+    /// Source location as byte offsets `(start, end)` within the source file, if known.
+    pub span: Option<(usize, usize)>,
 }
 
 impl ModuleImport {
     pub fn new(path: ModulePath, import_type: ImportType) -> Self {
-        Self { path, import_type }
+        Self {
+            path,
+            import_type,
+            span: None,
+        }
+    }
+
+    pub fn with_span(path: ModulePath, import_type: ImportType, span: (usize, usize)) -> Self {
+        Self {
+            path,
+            import_type,
+            span: Some(span),
+        }
     }
 }
 
@@ -142,16 +160,22 @@ impl DependencyGraph {
     /// Insert a module node into the graph.
     pub fn add_node(&mut self, node: ModuleNode) {
         let path = node.path.clone();
+        debug_assert!(!self.nodes.contains_key(&path), "duplicate node: {path}");
         self.nodes.entry(path.clone()).or_insert(node);
         self.adjacency.entry(path.clone()).or_default();
         self.reverse_adjacency.entry(path).or_default();
     }
 
-    /// Insert a directed edge into the graph (no-op if from == to).
     pub fn add_edge(&mut self, from: ModulePath, to: ModulePath, import_type: ImportType) {
         if from == to {
             return;
         }
+        debug_assert!(
+            self.nodes.contains_key(&from),
+            "edge from unknown node: {}",
+            from,
+        );
+        debug_assert!(self.nodes.contains_key(&to), "edge to unknown node: {}", to,);
         self.edges.push(DependencyEdge {
             from: from.clone(),
             to: to.clone(),
@@ -239,13 +263,27 @@ impl DependencyGraph {
             let missing: Vec<String> = self
                 .nodes
                 .keys()
-                .filter(|p| !in_result.contains(p))
+                .filter(|p| !sorted.contains(p))
                 .map(|p| p.to_string())
                 .collect();
             return Err(CompilationError::CircularImport {
                 cycle: missing.join(", "),
             });
         }
+
+        // Verify topological ordering: each imported module must appear before the importer.
+        debug_assert!(
+            {
+                let pos: HashMap<_, _> = sorted.iter().enumerate().map(|(i, p)| (p, i)).collect();
+                self.edges.iter().all(|e| {
+                    pos.get(&e.from)
+                        .zip(pos.get(&e.to))
+                        .map(|(from_pos, to_pos)| from_pos > to_pos)
+                        .unwrap_or(true)
+                })
+            },
+            "topological_sort produced invalid order",
+        );
 
         Ok(sorted)
     }
@@ -332,6 +370,30 @@ pub enum NameBinding {
     Extern,
 }
 
+/// The kind of declaration a name refers to in module-level name resolution.
+///
+/// Analogous to the Haskell compiler's `SyntacticBinding` variants:
+/// `TypeBinding`, `FunctionBinding`, `VarBinding`, etc.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DeclKind {
+    Function,
+    Global,
+    Struct,
+    Enum,
+}
+
+/// A declaration binding: a name declared in a specific module with a specific kind.
+///
+/// Used for cross-module name resolution to determine which module defines
+/// a name and what kind of declaration it is (function, struct, etc.).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeclBinding {
+    /// The module that declares this name.
+    pub module: ModulePath,
+    /// What kind of declaration it is.
+    pub kind: DeclKind,
+}
+
 /// Stores name bindings for a single module's scope.
 #[derive(Clone, Debug, Default)]
 pub struct BindingTable {
@@ -409,7 +471,10 @@ pub struct ModuleRegistry {
     modules: HashMap<ModulePath, Module>,
     graph: DependencyGraph,
     bindings: BindingTable,
-    declarations: HashMap<String, HashSet<ModulePath>>,
+    /// Maps declaration names to their bindings (module + kind) for name resolution.
+    declarations: HashMap<String, Vec<DeclBinding>>,
+    /// Modules that failed to load. Used to avoid cascading "dependency not found" errors.
+    pub(crate) failed: HashSet<ModulePath>,
 }
 
 impl ModuleRegistry {
@@ -420,14 +485,22 @@ impl ModuleRegistry {
             graph: DependencyGraph::new(),
             bindings: BindingTable::new(),
             declarations: HashMap::new(),
+            failed: HashSet::new(),
         }
     }
 
     /// Register a module and its declarations into the registry.
     /// Modules are looked up by path; duplicate paths are overwritten.
+    /// Register a module and its declarations into the registry.
+    /// Panics in debug builds if a module with the same path is already registered.
     pub fn register(&mut self, module: Module) {
         let path = module.path.clone();
         let source_path = module.source_path.clone();
+        debug_assert!(
+            !self.modules.contains_key(&path),
+            "duplicate module: {}",
+            path,
+        );
         self.graph
             .add_node(ModuleNode::new(path.clone(), source_path));
         self.register_module_declarations(&module);
@@ -435,21 +508,32 @@ impl ModuleRegistry {
         self.modules.insert(path, module);
     }
 
-    fn register_names<I: IntoIterator<Item = String>>(&mut self, names: I, mod_path: &ModulePath) {
-        for name in names {
-            self.declarations
-                .entry(name)
-                .or_default()
-                .insert(mod_path.clone());
-        }
+    /// Register a single declaration name in the global declaration table.
+    fn register_decl(&mut self, name: String, kind: DeclKind, mod_path: &ModulePath) {
+        debug_assert!(!name.is_empty(), "empty declaration name");
+        self.declarations
+            .entry(name)
+            .or_default()
+            .push(DeclBinding {
+                module: mod_path.clone(),
+                kind,
+            });
     }
 
     fn register_module_declarations(&mut self, module: &Module) {
         let p = &module.path;
-        self.register_names(module.program.functions.iter().map(|f| f.name.clone()), p);
-        self.register_names(module.program.globals.iter().map(|g| g.name.clone()), p);
-        self.register_names(module.program.structs.iter().map(|s| s.name.clone()), p);
-        self.register_names(module.program.enums.iter().map(|e| e.name.clone()), p);
+        for f in &module.program.functions {
+            self.register_decl(f.name.clone(), DeclKind::Function, p);
+        }
+        for g in &module.program.globals {
+            self.register_decl(g.name.clone(), DeclKind::Global, p);
+        }
+        for s in &module.program.structs {
+            self.register_decl(s.name.clone(), DeclKind::Struct, p);
+        }
+        for e in &module.program.enums {
+            self.register_decl(e.name.clone(), DeclKind::Enum, p);
+        }
     }
 
     fn register_module_binding(&mut self, module: &Module) -> CompileResult<()> {
@@ -471,16 +555,31 @@ impl ModuleRegistry {
 
     /// Find which module defines a given declaration name.
     /// Prefers the current module if it also defines the name.
+    /// Find the module that declares a given name, preferring the current module.
+    ///
+    /// When multiple modules declare the same name, the current module's
+    /// declaration takes priority. Falls back to the first registered module.
     pub fn find_module_for_declaration(
         &self,
         name: &str,
         current_module: &ModulePath,
     ) -> Option<ModulePath> {
         let candidates = self.declarations.get(name)?;
-        if candidates.contains(current_module) {
-            return Some(current_module.clone());
+        for decl in candidates {
+            if decl.module == *current_module {
+                return Some(current_module.clone());
+            }
         }
-        candidates.iter().next().cloned()
+        candidates.first().map(|d| d.module.clone())
+    }
+
+    /// Find the declaration kind for a name in a specific module, if known.
+    pub fn find_decl_kind(&self, name: &str, module: &ModulePath) -> Option<DeclKind> {
+        let candidates = self.declarations.get(name)?;
+        candidates
+            .iter()
+            .find(|d| d.module == *module)
+            .map(|d| d.kind.clone())
     }
 
     /// Resolve a potentially qualified name into (module_path, base_name).
@@ -503,6 +602,7 @@ impl ModuleRegistry {
                 .collect();
             let mod_path = ModulePath(mod_segments);
             if self.modules.contains_key(&mod_path) {
+                debug_assert!(!base_name.is_empty(), "empty base name in qualified name");
                 Some((mod_path, base_name))
             } else {
                 self.find_module_for_declaration(name, current_module)

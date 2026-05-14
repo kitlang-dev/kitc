@@ -4,15 +4,16 @@ use crate::error::CompilationError;
 use pest::iterators::Pair;
 
 use std::collections::HashSet;
+use std::ops::Deref;
 use std::str::FromStr;
 
 /// Identity handle for a type in `TypeStore`.
 ///
 /// Types need stable identity for inference - we can't use the enum alone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeId(u32);
 
-impl std::ops::Deref for TypeId {
+impl Deref for TypeId {
     type Target = TypeId;
     fn deref(&self) -> &Self::Target {
         self
@@ -26,7 +27,7 @@ impl Default for TypeId {
 }
 
 /// Identity handle for a type variable (unknown type during inference).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TypeVarId(u32);
 
 /// Represents a type variable used during inference.
@@ -140,7 +141,12 @@ impl TypeStore {
     }
 
     fn get_node(&self, id: TypeId) -> &TypeNode {
-        // We assume valid IDs here as they are managed by TypeStore
+        debug_assert!(
+            (id.0 as usize) < self.nodes.len(),
+            "get_node: invalid TypeId {} (max {})",
+            id.0,
+            self.nodes.len().saturating_sub(1),
+        );
         &self.nodes[id.0 as usize]
     }
 
@@ -415,7 +421,7 @@ fn simple_c_type(name: &str, headers: &[&str]) -> CRepr {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BinaryOperator {
     Add,
     Sub,

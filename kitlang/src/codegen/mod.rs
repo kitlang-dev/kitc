@@ -21,8 +21,8 @@ pub mod type_ast;
 pub use ast::{Block, Expr, Function, GlobalDecl, Include, Literal, Param, Program, Stmt};
 pub use compiler::Toolchain;
 pub use module::{
-    DependencyEdge, DependencyGraph, ImportType, Module, ModuleImport, ModuleNode, ModulePath,
-    ModuleRegistry, NameBinding,
+    DeclBinding, DeclKind, DependencyEdge, DependencyGraph, ImportType, Module, ModuleImport,
+    ModuleNode, ModulePath, ModuleRegistry, NameBinding,
 };
 pub use type_ast::{Field, FieldInit, StructDefinition};
 

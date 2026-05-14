@@ -178,6 +178,7 @@ impl Compiler {
         &mut self,
         sorted_paths: &[ModulePath],
     ) -> CompileResult<Vec<PathBuf>> {
+        debug_assert!(!sorted_paths.is_empty(), "no modules to generate");
         fs::create_dir_all(&self.build_dir).map_err(CompilationError::Io)?;
 
         let mut c_files = Vec::new();
@@ -382,6 +383,10 @@ impl Compiler {
 
     /// Resolve a type ID to its C type name, falling back to a default on failure.
     fn resolve_type_to_c_name(&self, type_id: TypeId, fallback: &str) -> String {
+        debug_assert!(
+            type_id != TypeId::default(),
+            "resolve_type_to_c_name: unresolved TypeId (default) for '{fallback}'",
+        );
         self.inferencer
             .store
             .resolve(type_id)
@@ -581,6 +586,7 @@ impl Compiler {
 
     /// Transpile a Kit function definition to C code.
     fn transpile_function(&self, func: &Function) -> String {
+        debug_assert!(!func.name.is_empty(), "function with empty name");
         let return_type = if func.name == "main" {
             "int".to_string()
         } else {
