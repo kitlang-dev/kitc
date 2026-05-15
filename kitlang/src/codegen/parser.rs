@@ -12,19 +12,24 @@ use crate::error::CompileResult;
 
 use std::str::FromStr;
 
-#[derive(Default, Debug)]
-pub struct Parser {}
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Parser;
 
 impl Parser {
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 
     /// Extract the first identifier from a pair's children (e.g., variable name, field name)
     fn extract_first_identifier(pair: Pair<'_, Rule>) -> Option<String> {
         pair.into_inner()
             .find(|p| p.as_rule() == Rule::identifier)
-            .map(|p| p.to_string())
+            .map(Self::pair_text)
+    }
+
+    /// Extract the text content from a pest Pair.
+    fn pair_text(pair: Pair<'_, Rule>) -> String {
+        pair.as_str().to_string()
     }
 
     /// Check if a var_decl uses the 'const' keyword
@@ -42,7 +47,7 @@ impl Parser {
         let path = path_str[1..path_str.len() - 1].to_string();
 
         let linked_lib = inner.next().map(|lib_pair| {
-            let lib_str = lib_pair.as_str();
+            let lib_str = Self::pair_text(lib_pair);
             lib_str[1..lib_str.len() - 1].to_string()
         });
 
@@ -95,10 +100,10 @@ impl Parser {
         };
 
         // Function name is always next
-        let name = inner
-            .next()
-            .ok_or_else(|| CompilationError::ParseError("function missing name".to_string()))?
-            .to_string();
+        let name =
+            Self::pair_text(inner.next().ok_or_else(|| {
+                CompilationError::ParseError("function missing name".to_string())
+            })?);
 
         let mut params: Vec<Param> = Vec::new();
         let mut return_type: Option<Type> = None;
@@ -130,11 +135,12 @@ impl Parser {
 
         // First child should be the struct name (identifier)
         // The "struct" keyword is consumed when matching the rule itself
-        let name = inner
-            .next()
-            .filter(|p| p.as_rule() == Rule::identifier)
-            .ok_or(parse_error!("struct definition missing name"))?
-            .to_string();
+        let name = Self::pair_text(
+            inner
+                .next()
+                .filter(|p| p.as_rule() == Rule::identifier)
+                .ok_or(parse_error!("struct definition missing name"))?,
+        );
 
         // Skip type_params if present
         while let Some(peek) = inner.peek() {
@@ -183,11 +189,12 @@ impl Parser {
     pub fn parse_enum_def(&self, pair: Pair<Rule>) -> CompileResult<EnumDefinition> {
         let mut inner = pair.into_inner();
 
-        let name = inner
-            .next()
-            .filter(|p| p.as_rule() == Rule::identifier)
-            .ok_or(parse_error!("enum definition missing name"))?
-            .to_string();
+        let name = Self::pair_text(
+            inner
+                .next()
+                .filter(|p| p.as_rule() == Rule::identifier)
+                .ok_or(parse_error!("enum definition missing name"))?,
+        );
 
         while let Some(peek) = inner.peek() {
             if peek.as_rule() == Rule::type_params {
@@ -236,7 +243,7 @@ impl Parser {
         for child in pair.clone().into_inner() {
             match child.as_rule() {
                 Rule::identifier => {
-                    identifier_found = Some(child.to_string());
+                    identifier_found = Some(Self::pair_text(child));
                 }
                 Rule::param => {
                     let field = self.parse_param_field(child)?;
@@ -298,12 +305,12 @@ impl Parser {
     }
 
     /// Extract the default expression from a var_decl pair
-    fn extract_default_expr(pair: Pair<'_, Rule>) -> Option<pest::iterators::Pair<'_, Rule>> {
+    fn extract_default_expr(pair: Pair<'_, Rule>) -> Option<Pair<'_, Rule>> {
         pair.into_inner().find(|p| p.as_rule() == Rule::expr)
     }
 
     /// Parse type annotation from a var_decl pair
-    fn extract_type_annotation(pair: Pair<'_, Rule>) -> Option<pest::iterators::Pair<'_, Rule>> {
+    fn extract_type_annotation(pair: Pair<'_, Rule>) -> Option<Pair<'_, Rule>> {
         pair.into_inner()
             .find(|p| p.as_rule() == Rule::type_annotation)
     }
@@ -315,7 +322,7 @@ impl Parser {
             .map(|p: Pair<Rule>| {
                 let mut inner = p.into_inner();
                 // SAFETY: Grammar guarantees param has identifier and type
-                let name = inner.next().unwrap().to_string();
+                let name = Self::pair_text(inner.next().unwrap());
                 let type_node = inner.next().unwrap();
                 let ty_ann = self.parse_type(type_node)?;
                 Ok(Param {
@@ -330,7 +337,7 @@ impl Parser {
     fn parse_param_field(&self, pair: Pair<Rule>) -> CompileResult<Field> {
         // param = { identifier ~ ":" ~ type_annotation ~ ( "=" ~ expr )? }
         let mut inner = pair.into_inner();
-        let name = inner.next().unwrap().to_string();
+        let name = Self::pair_text(inner.next().unwrap());
         let type_node = inner.next().unwrap();
         let ty_ann = self.parse_type(type_node)?;
 
@@ -430,7 +437,7 @@ impl Parser {
     }
 
     /// Extract initializer expression from a var_decl pair
-    fn extract_init_expr(pair: Pair<'_, Rule>) -> Option<pest::iterators::Pair<'_, Rule>> {
+    fn extract_init_expr(pair: Pair<'_, Rule>) -> Option<Pair<'_, Rule>> {
         pair.into_inner().find(|p| p.as_rule() == Rule::expr)
     }
 
@@ -513,7 +520,7 @@ impl Parser {
     fn parse_for_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         // for_stmt = { "for" ~ identifier ~ "in" ~ expr ~ block }
         let mut inner = pair.into_inner();
-        let var = inner.next().unwrap().to_string();
+        let var = Self::pair_text(inner.next().unwrap());
         let iter = self.parse_expr(inner.next().unwrap())?;
         let body = self.parse_block(inner.next().unwrap())?;
         Ok(Stmt::For { var, iter, body })
@@ -586,7 +593,7 @@ impl Parser {
                     other => Err(parse_error!("Unexpected rule in unary: {other:?}")),
                 }
             }
-            Rule::identifier => Ok(Expr::Identifier(pair.to_string(), TypeId::default())),
+            Rule::identifier => Ok(Expr::Identifier(Self::pair_text(pair), TypeId::default())),
             Rule::literal => {
                 // SAFETY: Grammar guarantees exactly one child in literal
                 let inner = pair.into_inner().next().unwrap();
@@ -629,7 +636,7 @@ impl Parser {
             Rule::function_call_expr => {
                 let mut inner = pair.into_inner();
                 // SAFETY: Grammar guarantees callee identifier exists
-                let callee = inner.next().unwrap().as_str().to_string();
+                let callee = Self::pair_text(inner.next().unwrap());
                 let args = inner
                     .filter(|p: &Pair<Rule>| p.as_rule() == Rule::expr)
                     .map(|p: Pair<Rule>| self.parse_expr(p))
@@ -670,9 +677,10 @@ impl Parser {
                     // Otherwise, unwrap and parse the inner rule
                     let inner_pair = inner.next().unwrap();
                     match inner_pair.as_rule() {
-                        Rule::identifier => {
-                            Ok(Expr::Identifier(inner_pair.to_string(), TypeId::default()))
-                        }
+                        Rule::identifier => Ok(Expr::Identifier(
+                            Self::pair_text(inner_pair),
+                            TypeId::default(),
+                        )),
                         Rule::literal
                         | Rule::function_call_expr
                         | Rule::array_literal
@@ -701,10 +709,11 @@ impl Parser {
                 for field_pair in inner {
                     if field_pair.as_rule() == Rule::postfix_field {
                         let mut field_inner = field_pair.into_inner();
-                        let field_name = field_inner
-                            .next()
-                            .ok_or(parse_error!("Expected field name after '.'"))?
-                            .to_string();
+                        let field_name = Self::pair_text(
+                            field_inner
+                                .next()
+                                .ok_or(parse_error!("Expected field name after '.'"))?,
+                        );
                         expr = Expr::FieldAccess {
                             expr: Box::new(expr),
                             field_name,
@@ -785,7 +794,7 @@ impl Parser {
     fn parse_field_init(&self, pair: Pair<Rule>) -> CompileResult<FieldInit> {
         // field_init = { identifier ~ ":" ~ expr }
         let mut inner = pair.into_inner();
-        let name = inner.next().unwrap().to_string();
+        let name = Self::pair_text(inner.next().unwrap());
         let value = self.parse_expr(inner.next().unwrap())?;
         Ok(FieldInit { name, value })
     }

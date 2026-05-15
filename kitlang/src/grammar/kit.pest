@@ -15,7 +15,7 @@ path = { identifier ~ ("." ~ identifier)* }
 import_path = { identifier ~ ("." ~ identifier)* ~ ("." ~ ("**" | "*"))? }
 
 function_decl = {
-    metadata_and_modifiers ~ "function" ~ identifier ~ "(" ~ params? ~ ")" ~ (":" ~ type_annotation)? ~ block
+    "function" ~ identifier ~ "(" ~ params? ~ ")" ~ (":" ~ type_annotation)? ~ block
 }
 
 params = { param ~ ("," ~ param)* }
@@ -91,7 +91,7 @@ union_def = { "union" ~ identifier ~ type_params? ~ "{" ~ (var_decl)* ~ "}" }
 abstract_def = { "abstract" ~ identifier ~ type_params? ~ ":" ~ type_annotation }
 
 metadata_and_modifiers = { (metadata | modifier)* }
-metadata = { "#[" ~ identifier ~ ("(" ~ (expr ~ ("," ~ expr)*)? ~ ")")? ~ "]" }
+metadata = { "#[" ~ identifier ~ "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" ~ "]" }
 modifier = { "public" | "private" | "inline" | "static" }
 type_params = { "[" ~ (type_param ~ ("," ~ type_param)*)? ~ "]" }
 type_param = { identifier ~ ("=" ~ type_annotation)? }
