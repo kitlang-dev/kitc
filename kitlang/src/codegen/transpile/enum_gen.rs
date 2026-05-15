@@ -1,5 +1,5 @@
 use crate::codegen::frontend::Compiler;
-use crate::codegen::name_mangling::{mangle_enum_variant, mangle_type};
+use crate::codegen::name_mangling::{mangle_enum_variant, mangle_name};
 use crate::codegen::type_ast::{EnumDefinition, StructDefinition};
 use crate::codegen::types::{ToCRepr, Type};
 
@@ -28,7 +28,7 @@ impl Compiler {
             })
             .collect();
 
-        let struct_name = mangle_type(&self.current_module, &struct_def.name);
+        let struct_name = mangle_name(&self.current_module, &struct_def.name);
         format!("struct {} {{\n{}\n}};", struct_name, field_decls.join("\n"))
     }
 
@@ -37,7 +37,7 @@ impl Compiler {
     /// Enums with data-carrying variants get a tagged-union layout.
     pub(super) fn generate_enum_declaration(&self, enum_def: &EnumDefinition) -> String {
         let mut output = String::new();
-        let enum_type_name = mangle_type(&self.current_module, &enum_def.name);
+        let enum_type_name = mangle_name(&self.current_module, &enum_def.name);
         let all_simple = enum_def.variants.iter().all(|v| v.args.is_empty());
 
         if all_simple {

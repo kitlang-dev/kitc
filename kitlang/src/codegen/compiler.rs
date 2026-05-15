@@ -296,11 +296,3 @@ impl CompilerOptions {
         Ok((compiler_path, args))
     }
 }
-
-impl From<CompilerOptions> for Vec<String> {
-    fn from(val: CompilerOptions) -> Self {
-        val.build_invocation()
-            .expect("failed to build compiler invocation")
-            .1
-    }
-}

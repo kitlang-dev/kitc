@@ -57,3 +57,11 @@ macro_rules! parse_error {
         $crate::error::CompilationError::ParseError(format!($($arg)*))
     };
 }
+
+/// Helper macro to create a `CompilationError::TypeError`
+#[macro_export]
+macro_rules! type_err {
+    ( $($arg:tt)* ) => {
+        $crate::error::CompilationError::TypeError(format!($($arg)*))
+    };
+}

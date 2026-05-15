@@ -15,6 +15,7 @@ pub struct EnumVariantInfo {
 ///
 /// Currently uses a flat scope (no nesting). Variables and functions are tracked
 /// by their names and their `TypeId`s.
+#[derive(Default)]
 pub struct SymbolTable {
     /// Maps global variable names to their inferred `TypeId`s.
     globals: HashMap<String, TypeId>,
@@ -33,12 +34,6 @@ pub struct SymbolTable {
 
     /// Maps qualified variant names ("EnumName.VariantName") to variant info.
     enum_variants: HashMap<String, EnumVariantInfo>,
-}
-
-impl Default for SymbolTable {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl SymbolTable {

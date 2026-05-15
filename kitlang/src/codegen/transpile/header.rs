@@ -6,11 +6,63 @@ use std::path::PathBuf;
 use crate::codegen::ast::Program;
 use crate::codegen::frontend::{Compiler, merge_modules_for_inference};
 use crate::codegen::module::{Module, ModulePath};
-use crate::codegen::name_mangling::{mangle_function, mangle_global};
+use crate::codegen::name_mangling::mangle_name;
 use crate::codegen::types::ToCRepr;
 use crate::error::{CompilationError, CompileResult};
 
 use super::collect_type_headers_and_decls;
+
+/// Pre-collected name sets for a module's declarations.
+struct NameSets {
+    functions: HashSet<String>,
+    globals: HashSet<String>,
+    structs: HashSet<String>,
+    enums: HashSet<String>,
+}
+
+impl NameSets {
+    fn from_module(module: &Module) -> Self {
+        Self {
+            functions: module
+                .program
+                .functions
+                .iter()
+                .map(|f| f.name.clone())
+                .collect(),
+            globals: module
+                .program
+                .globals
+                .iter()
+                .map(|g| g.name.clone())
+                .collect(),
+            structs: module
+                .program
+                .structs
+                .iter()
+                .map(|s| s.name.clone())
+                .collect(),
+            enums: module
+                .program
+                .enums
+                .iter()
+                .map(|e| e.name.clone())
+                .collect(),
+        }
+    }
+}
+
+/// Filter items from `source` that have a name in `names`.
+fn filter_by_name<T: Clone>(
+    source: &[T],
+    names: &HashSet<String>,
+    get_name: fn(&T) -> &str,
+) -> Vec<T> {
+    source
+        .iter()
+        .filter(|item| names.contains(get_name(item)))
+        .cloned()
+        .collect()
+}
 
 impl Compiler {
     /// Generate C code from the merged program and write it to the flat output path.
@@ -87,57 +139,14 @@ impl Compiler {
         for path in sorted_paths {
             self.current_module = path.clone();
             if let Some(module) = self.registry.get(path) {
-                let func_names: HashSet<String> = module
-                    .program
-                    .functions
-                    .iter()
-                    .map(|f| f.name.clone())
-                    .collect();
-                let global_names: HashSet<String> = module
-                    .program
-                    .globals
-                    .iter()
-                    .map(|g| g.name.clone())
-                    .collect();
-                let struct_names: HashSet<String> = module
-                    .program
-                    .structs
-                    .iter()
-                    .map(|s| s.name.clone())
-                    .collect();
-                let enum_names: HashSet<String> = module
-                    .program
-                    .enums
-                    .iter()
-                    .map(|e| e.name.clone())
-                    .collect();
+                let names = NameSets::from_module(module);
 
                 let filtered = Program {
                     module_path: Some(path.clone()),
-                    globals: merged
-                        .globals
-                        .iter()
-                        .filter(|g| global_names.contains(&g.name))
-                        .cloned()
-                        .collect(),
-                    functions: merged
-                        .functions
-                        .iter()
-                        .filter(|f| func_names.contains(&f.name))
-                        .cloned()
-                        .collect(),
-                    structs: merged
-                        .structs
-                        .iter()
-                        .filter(|s| struct_names.contains(&s.name))
-                        .cloned()
-                        .collect(),
-                    enums: merged
-                        .enums
-                        .iter()
-                        .filter(|e| enum_names.contains(&e.name))
-                        .cloned()
-                        .collect(),
+                    globals: filter_by_name(&merged.globals, &names.globals, |g| &g.name),
+                    functions: filter_by_name(&merged.functions, &names.functions, |f| &f.name),
+                    structs: filter_by_name(&merged.structs, &names.structs, |s| &s.name),
+                    enums: filter_by_name(&merged.enums, &names.enums, |e| &e.name),
                     traits: vec![],
                     impls: vec![],
                     rulesets: vec![],
@@ -209,7 +218,7 @@ impl Compiler {
                         .map(|a| a.to_c_repr().name)
                         .unwrap_or_else(|| "int".to_string()),
                 };
-                let gname = mangle_global(&module.path, &global.name);
+                let gname = mangle_name(&module.path, &global.name);
                 let const_ = if global.is_const { "const " } else { "" };
                 writeln!(out, "extern {const_}{ty} {};", gname).unwrap();
             }
@@ -223,7 +232,7 @@ impl Compiler {
             let fname = if func.name == "main" {
                 "main".to_string()
             } else {
-                mangle_function(&module.path, &func.name)
+                mangle_name(&module.path, &func.name)
             };
             let params = self.format_function_params_with_module(&func.params, &module.path);
             writeln!(out, "{} {}({});", ret, fname, params).unwrap();

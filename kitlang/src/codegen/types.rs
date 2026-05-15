@@ -33,6 +33,7 @@ pub struct TypeVar {
 /// Central type storage for type inference.
 ///
 /// All type mutations go through here, making inference predictable.
+#[derive(Default)]
 pub struct TypeStore {
     nodes: Vec<TypeNode>,
     type_vars: Vec<TypeVar>,
@@ -45,12 +46,6 @@ enum TypeNode {
     Known(Type),
     /// Inference-only placeholder
     Unknown(TypeVarId),
-}
-
-impl Default for TypeStore {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl TypeStore {
@@ -127,6 +122,19 @@ impl TypeStore {
         })
     }
 
+    /// Create a known type from an optional annotation, or an unknown type variable if None.
+    pub fn known_or_unknown(&mut self, ann: Option<&Type>) -> TypeId {
+        match ann {
+            Some(t) => self.new_known(t.clone()),
+            None => self.new_unknown(),
+        }
+    }
+
+    /// Like `known_or_unknown`, but wraps the result in `Some` for optional type fields.
+    pub fn known_or_unknown_some(&mut self, ann: Option<&Type>) -> Option<TypeId> {
+        Some(self.known_or_unknown(ann))
+    }
+
     /// Check if a `TypeId` is an unknown type variable.
     pub fn is_unknown(&self, id: TypeId) -> bool {
         matches!(self.nodes.get(id.0 as usize), Some(TypeNode::Unknown(_)))
@@ -182,26 +190,22 @@ impl TypeStore {
 
     /// Unify two known Type enum values structurally.
     fn unify_types(&mut self, a: &Type, b: &Type) -> Result<(), String> {
-        match (a, b) {
-            // Simple type equality
-            (Type::Int8, Type::Int8) => Ok(()),
-            (Type::Int16, Type::Int16) => Ok(()),
-            (Type::Int32, Type::Int32) => Ok(()),
-            (Type::Int64, Type::Int64) => Ok(()),
-            (Type::Uint8, Type::Uint8) => Ok(()),
-            (Type::Uint16, Type::Uint16) => Ok(()),
-            (Type::Uint32, Type::Uint32) => Ok(()),
-            (Type::Uint64, Type::Uint64) => Ok(()),
-            (Type::Float32, Type::Float32) => Ok(()),
-            (Type::Float64, Type::Float64) => Ok(()),
-            (Type::Int | Type::Bool, Type::Int) | (Type::Int, Type::Bool) => Ok(()),
-            (Type::Float, Type::Float) => Ok(()),
-            (Type::Size, Type::Size) => Ok(()),
-            (Type::Char, Type::Char) => Ok(()),
-            (Type::Bool, Type::Bool) => Ok(()),
-            (Type::CString, Type::CString) => Ok(()),
-            (Type::Void, Type::Void) => Ok(()),
+        // Fast path: structurally identical simple types (Int8, Bool, CString, etc.)
+        if a == b
+            && !matches!(
+                a,
+                Type::Ptr(_) | Type::Tuple(_) | Type::CArray(..) | Type::Named(_)
+            )
+        {
+            return Ok(());
+        }
 
+        // Special-case type coercion: Int <-> Bool
+        if matches!((a, b), (Type::Int, Type::Bool) | (Type::Bool, Type::Int)) {
+            return Ok(());
+        }
+
+        match (a, b) {
             // Pointer types: unify inner types
             (Type::Ptr(t1), Type::Ptr(t2)) => self.unify_type_ids((**t1).clone(), (**t2).clone()),
 

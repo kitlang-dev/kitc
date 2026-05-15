@@ -6,18 +6,14 @@ use super::symbols::{EnumVariantInfo, SymbolTable};
 use super::type_ast::{EnumDefinition, FieldInit, StructDefinition};
 use super::types::{BinaryOperator, Type, TypeId, TypeStore, UnaryOperator};
 use crate::error::{CompilationError, CompileResult};
+use crate::type_err;
 
 /// Type inference engine using Hindley-Milner algorithm.
+#[derive(Default)]
 pub struct TypeInferencer {
     pub store: TypeStore,
     symbols: SymbolTable,
     current_return_type: Option<TypeId>,
-}
-
-impl Default for TypeInferencer {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl TypeInferencer {
@@ -74,10 +70,10 @@ impl TypeInferencer {
                 global.inferred = self.store.new_known(ann.clone());
                 self.symbols.define_global(&global.name, global.inferred);
             } else {
-                return Err(CompilationError::TypeError(format!(
+                return Err(type_err!(
                     "Global variable '{}' declared without type annotation or initializer",
                     global.name
-                )));
+                ));
             }
         }
         Ok(())
@@ -100,11 +96,7 @@ impl TypeInferencer {
             // Build field type list and update field types
             let mut updated_fields = Vec::new();
             for field in &struct_def.fields {
-                let field_type_id = if let Some(ann) = &field.annotation {
-                    self.store.new_known(ann.clone())
-                } else {
-                    self.store.new_unknown()
-                };
+                let field_type_id = self.store.known_or_unknown(field.annotation.as_ref());
                 updated_fields.push(Field {
                     name: field.name.clone(),
                     ty: field_type_id,
@@ -144,20 +136,12 @@ impl TypeInferencer {
     fn infer_function(&mut self, func: &mut Function) -> CompileResult<()> {
         // Infer parameter types (fresh unknowns if unannotated)
         for param in &mut func.params {
-            param.ty = if let Some(ann) = &param.annotation {
-                self.store.new_known(ann.clone())
-            } else {
-                self.store.new_unknown()
-            };
+            param.ty = self.store.known_or_unknown(param.annotation.as_ref());
             self.symbols.define_var(&param.name, param.ty);
         }
 
         // Infer return type
-        func.inferred_return = if let Some(ann) = &func.return_type {
-            Some(self.store.new_known(ann.clone()))
-        } else {
-            Some(self.store.new_unknown())
-        };
+        func.inferred_return = self.store.known_or_unknown_some(func.return_type.as_ref());
 
         self.current_return_type = func.inferred_return;
 
@@ -209,9 +193,9 @@ impl TypeInferencer {
                     *inferred = self.store.new_known(ann.clone());
                     self.symbols.define_var(name, *inferred);
                 } else {
-                    return Err(CompilationError::TypeError(format!(
+                    return Err(type_err!(
                         "Variable '{name}' declared without type annotation or initializer",
-                    )));
+                    ));
                 }
             }
 
@@ -224,9 +208,7 @@ impl TypeInferencer {
                 if let Some(ret_ty) = self.current_return_type {
                     self.unify(ret_ty, expr_ty)?;
                 } else {
-                    return Err(CompilationError::TypeError(
-                        "Return statement outside of function".into(),
-                    ));
+                    return Err(type_err!("Return statement outside of function"));
                 }
             }
 
@@ -236,9 +218,7 @@ impl TypeInferencer {
                     let void_ty = self.store.new_known(Type::Void);
                     self.unify(ret_ty, void_ty)?;
                 } else {
-                    return Err(CompilationError::TypeError(
-                        "Return statement outside of function".into(),
-                    ));
+                    return Err(type_err!("Return statement outside of function"));
                 }
             }
 
@@ -275,9 +255,9 @@ impl TypeInferencer {
                     .resolve(iter_ty)
                     .map_err(CompilationError::TypeError)?;
                 if iter_resolved != Type::Int && iter_resolved != Type::Void {
-                    return Err(CompilationError::TypeError(format!(
+                    return Err(type_err!(
                         "For loop iterator must be Int or Range, found {iter_resolved:?}"
-                    )));
+                    ));
                 }
 
                 let var_ty = self.store.new_known(Type::Int);
@@ -349,9 +329,9 @@ impl TypeInferencer {
 
                             enum_ty
                         } else {
-                            return Err(CompilationError::TypeError(format!(
+                            return Err(type_err!(
                                 "Use of undeclared variable or enum variant '{name}'"
-                            )));
+                            ));
                         }
                     }
                 }
@@ -373,72 +353,63 @@ impl TypeInferencer {
                 type_id
             }
 
+            Expr::Call { callee, args, ty }
+                if let Some(variant_info) =
+                    self.symbols.lookup_enum_variant_by_simple_name(callee) =>
+            {
+                let args_clone = args.clone();
+
+                let enum_def = self.symbols.lookup_enum(&variant_info.enum_name).cloned();
+
+                let mut resolved_args = if let Some(ref ed) = enum_def {
+                    self.resolve_default_args(variant_info, ed, &args_clone)?
+                } else {
+                    args_clone
+                };
+
+                *args = resolved_args.clone();
+
+                let enum_ty = self
+                    .store
+                    .new_known(Type::Named(variant_info.enum_name.clone()));
+
+                for arg in resolved_args.iter_mut() {
+                    self.infer_expr(arg)?;
+                }
+
+                *ty = enum_ty;
+                enum_ty
+            }
             Expr::Call { callee, args, ty } => {
-                // Check if this is actually an enum variant constructor call
-                if let Some(variant_info) = self.symbols.lookup_enum_variant_by_simple_name(callee)
-                {
-                    // Clone args before transformation
-                    let args_clone = args.clone();
+                let (param_tys, ret_ty) = if let Some(sig) = self.symbols.lookup_function(callee) {
+                    sig
+                } else {
+                    let void_ty = self.store.new_known(Type::Void);
+                    (vec![], void_ty)
+                };
 
-                    // This is an enum variant constructor with arguments
-                    let enum_def = self.symbols.lookup_enum(&variant_info.enum_name).cloned();
+                if !param_tys.is_empty() && args.len() != param_tys.len() {
+                    return Err(type_err!(
+                        "Function '{}' expects {} arguments, got {}",
+                        callee,
+                        param_tys.len(),
+                        args.len()
+                    ));
+                }
 
-                    // Resolve default arguments
-                    let mut resolved_args = if let Some(ref ed) = enum_def {
-                        self.resolve_default_args(variant_info, ed, &args_clone)?
-                    } else {
-                        args_clone
-                    };
-
-                    // Update the args in the expression with resolved defaults
-                    *args = resolved_args.clone();
-
-                    let enum_ty = self
-                        .store
-                        .new_known(Type::Named(variant_info.enum_name.clone()));
-
-                    // Infer types for the resolved arguments
-                    for arg in resolved_args.iter_mut() {
+                if param_tys.is_empty() {
+                    for arg in args.iter_mut() {
                         self.infer_expr(arg)?;
                     }
-
-                    *ty = enum_ty;
-                    enum_ty
                 } else {
-                    let (param_tys, ret_ty) =
-                        if let Some(sig) = self.symbols.lookup_function(callee) {
-                            sig
-                        } else {
-                            // For undeclared functions (like printf), we allow them but can't check params.
-                            // We assume they return Void for now, or we could return a fresh unknown.
-                            let void_ty = self.store.new_known(Type::Void);
-                            (vec![], void_ty)
-                        };
-
-                    if !param_tys.is_empty() && args.len() != param_tys.len() {
-                        return Err(CompilationError::TypeError(format!(
-                            "Function '{}' expects {} arguments, got {}",
-                            callee,
-                            param_tys.len(),
-                            args.len()
-                        )));
+                    for (arg, param_ty) in args.iter_mut().zip(param_tys.iter()) {
+                        let arg_ty = self.infer_expr(arg)?;
+                        self.unify(arg_ty, *param_ty)?;
                     }
-
-                    if param_tys.is_empty() {
-                        // Just infer arguments without unifying if signature is unknown (variadic C funcs)
-                        for arg in args.iter_mut() {
-                            self.infer_expr(arg)?;
-                        }
-                    } else {
-                        for (arg, param_ty) in args.iter_mut().zip(param_tys.iter()) {
-                            let arg_ty = self.infer_expr(arg)?;
-                            self.unify(arg_ty, *param_ty)?;
-                        }
-                    }
-
-                    *ty = ret_ty;
-                    ret_ty
                 }
+
+                *ty = ret_ty;
+                ret_ty
             }
 
             Expr::UnaryOp { op, expr, ty } => {
@@ -462,9 +433,9 @@ impl TypeInferencer {
                         if let Type::Ptr(inner_ty) = resolved {
                             self.store.new_known(*inner_ty)
                         } else {
-                            return Err(CompilationError::TypeError(format!(
+                            return Err(type_err!(
                                 "Cannot dereference non-pointer type: {resolved:?}"
-                            )));
+                            ));
                         }
                     }
                     _ => expr_ty,
@@ -567,29 +538,23 @@ impl TypeInferencer {
                 let resolved_ty = if let Some(ref st) = *struct_type {
                     self.store.new_known(st.clone())
                 } else {
-                    return Err(CompilationError::TypeError(
-                        "StructInit missing type annotation".into(),
-                    ));
+                    return Err(type_err!("StructInit missing type annotation"));
                 };
 
                 // Look up struct definition in symbol table using the resolved type
                 let struct_def = {
                     let resolved = self.store.resolve(resolved_ty)?;
                     match resolved {
-                        Type::Named(name) => {
-                            self.symbols.lookup_struct(&name).ok_or_else(|| {
-                                CompilationError::TypeError(format!("Unknown struct type '{name}'"))
-                            })?
-                        }
-                        Type::Struct { name, .. } => {
-                            self.symbols.lookup_struct(&name).ok_or_else(|| {
-                                CompilationError::TypeError(format!("Unknown struct type '{name}'"))
-                            })?
-                        }
+                        Type::Named(name) => self
+                            .symbols
+                            .lookup_struct(&name)
+                            .ok_or_else(|| type_err!("Unknown struct type '{name}'"))?,
+                        Type::Struct { name, .. } => self
+                            .symbols
+                            .lookup_struct(&name)
+                            .ok_or_else(|| type_err!("Unknown struct type '{name}'"))?,
                         _ => {
-                            return Err(CompilationError::TypeError(
-                                "StructInit requires a struct type".into(),
-                            ));
+                            return Err(type_err!("StructInit requires a struct type"));
                         }
                     }
                 };
@@ -601,10 +566,11 @@ impl TypeInferencer {
                 // Validate all provided fields exist in struct
                 for field_init in fields.iter() {
                     if !struct_def.fields.iter().any(|f| f.name == field_init.name) {
-                        return Err(CompilationError::TypeError(format!(
+                        return Err(type_err!(
                             "Struct '{}' has no field '{}'",
-                            struct_def.name, field_init.name
-                        )));
+                            struct_def.name,
+                            field_init.name
+                        ));
                     }
                 }
 
@@ -613,10 +579,11 @@ impl TypeInferencer {
                     if !provided_field_names.contains(&field_def.name)
                         && field_def.default.is_none()
                     {
-                        return Err(CompilationError::TypeError(format!(
+                        return Err(type_err!(
                             "Struct '{}' field '{}' has no default value and was not provided in initialization",
-                            struct_def.name, field_def.name
-                        )));
+                            struct_def.name,
+                            field_def.name
+                        ));
                     }
                 }
 
@@ -707,22 +674,21 @@ impl TypeInferencer {
                                     .collect();
                                 (type_name, fields)
                             } else {
-                                return Err(CompilationError::TypeError(format!(
+                                return Err(type_err!(
                                     "Enum '{}' has no variant '{}'",
-                                    type_name, field_name
-                                )));
+                                    type_name,
+                                    field_name
+                                ));
                             }
                         } else {
-                            return Err(CompilationError::TypeError(format!(
+                            return Err(type_err!(
                                 "Cannot access field on unknown type '{}'",
                                 type_name
-                            )));
+                            ));
                         }
                     }
                     _ => {
-                        return Err(CompilationError::TypeError(
-                            "Cannot access field on non-struct type".into(),
-                        ));
+                        return Err(type_err!("Cannot access field on non-struct type"));
                     }
                 };
 
@@ -731,10 +697,11 @@ impl TypeInferencer {
                     .iter()
                     .find(|(fname, _)| fname == field_name)
                     .ok_or_else(|| {
-                        CompilationError::TypeError(format!(
+                        type_err!(
                             "Struct/variant '{}' has no field '{}'",
-                            struct_name, field_name
-                        ))
+                            struct_name,
+                            field_name
+                        )
                     })?
                     .1;
 
@@ -751,10 +718,7 @@ impl TypeInferencer {
                     .symbols
                     .lookup_variant(enum_name, variant_name)
                     .ok_or_else(|| {
-                        CompilationError::TypeError(format!(
-                            "Unknown enum variant '{}.{}'",
-                            enum_name, variant_name
-                        ))
+                        type_err!("Unknown enum variant '{}.{}'", enum_name, variant_name)
                     })?;
 
                 // Create a named type for the enum
@@ -774,19 +738,14 @@ impl TypeInferencer {
                         .symbols
                         .lookup_variant(enum_name, variant_name)
                         .ok_or_else(|| {
-                            CompilationError::TypeError(format!(
-                                "Unknown enum variant '{}.{}'",
-                                enum_name, variant_name
-                            ))
+                            type_err!("Unknown enum variant '{}.{}'", enum_name, variant_name)
                         })?
                         .clone();
 
                     let enum_def = self
                         .symbols
                         .lookup_enum(enum_name)
-                        .ok_or_else(|| {
-                            CompilationError::TypeError(format!("Unknown enum '{}'", enum_name))
-                        })?
+                        .ok_or_else(|| type_err!("Unknown enum '{}'", enum_name))?
                         .clone();
 
                     (info, enum_def)
@@ -800,13 +759,13 @@ impl TypeInferencer {
 
                 // Validate argument count matches (after defaults are resolved)
                 if args.len() != variant_info.arg_types.len() {
-                    return Err(CompilationError::TypeError(format!(
+                    return Err(type_err!(
                         "Enum variant '{}.{}' expects {} arguments, got {}",
                         enum_name,
                         variant_name,
                         variant_info.arg_types.len(),
                         args.len()
-                    )));
+                    ));
                 }
 
                 // Infer types for all arguments and unify with expected types
@@ -843,10 +802,11 @@ impl TypeInferencer {
                 .iter()
                 .find(|v| v.name == variant_info.variant_name)
                 .ok_or_else(|| {
-                    CompilationError::TypeError(format!(
+                    type_err!(
                         "Variant '{}' not found in enum '{}'",
-                        variant_info.variant_name, variant_info.enum_name
-                    ))
+                        variant_info.variant_name,
+                        variant_info.enum_name
+                    )
                 })?;
 
             let provided_len = result.len();

@@ -7,7 +7,7 @@ use crate::codegen::type_ast::UsingClause;
 use crate::error::{CompilationError, CompileResult};
 
 /// A module path (e.g., `["pkg", "utils"]` -> `"pkg.utils"`).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
 pub struct ModulePath(pub Vec<String>);
 
 impl ModulePath {
@@ -58,12 +58,6 @@ impl ModulePath {
             return true;
         }
         self.0.len() >= other.0.len() && self.0[..other.0.len()] == other.0
-    }
-}
-
-impl Default for ModulePath {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -526,24 +520,19 @@ impl ModuleRegistry {
 
     fn register_module_declarations(&mut self, module: &Module) {
         let p = &module.path;
-        for f in &module.program.functions {
-            self.register_decl(f.name.clone(), DeclKind::Function, p);
+        macro_rules! reg {
+            ($field:ident, $kind:ident) => {
+                for item in &module.program.$field {
+                    self.register_decl(item.name.clone(), DeclKind::$kind, p);
+                }
+            };
         }
-        for g in &module.program.globals {
-            self.register_decl(g.name.clone(), DeclKind::Global, p);
-        }
-        for s in &module.program.structs {
-            self.register_decl(s.name.clone(), DeclKind::Struct, p);
-        }
-        for e in &module.program.enums {
-            self.register_decl(e.name.clone(), DeclKind::Enum, p);
-        }
-        for t in &module.program.traits {
-            self.register_decl(t.name.clone(), DeclKind::Trait, p);
-        }
-        for r in &module.program.rulesets {
-            self.register_decl(r.name.clone(), DeclKind::RuleSet, p);
-        }
+        reg!(functions, Function);
+        reg!(globals, Global);
+        reg!(structs, Struct);
+        reg!(enums, Enum);
+        reg!(traits, Trait);
+        reg!(rulesets, RuleSet);
     }
 
     fn register_module_binding(&mut self, module: &Module) -> CompileResult<()> {

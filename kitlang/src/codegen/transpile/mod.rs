@@ -9,9 +9,7 @@ use std::path::PathBuf;
 use crate::codegen::ast::{Block, Expr, Function, GlobalDecl, Program, Stmt};
 use crate::codegen::frontend::Compiler;
 use crate::codegen::module::ModulePath;
-use crate::codegen::name_mangling::{
-    mangle_enum_variant, mangle_function, mangle_global, mangle_type,
-};
+use crate::codegen::name_mangling::{mangle_enum_variant, mangle_name};
 use crate::codegen::types::{ToCRepr, Type, TypeId};
 
 use super::ast::Param;
@@ -109,9 +107,9 @@ impl Compiler {
     fn type_to_c_name_with_module(&self, t: &Type, module: &ModulePath) -> String {
         if let Type::Named(name) = t {
             if self.inferencer.is_struct_type(name) {
-                format!("struct {}", mangle_type(module, name))
+                format!("struct {}", mangle_name(module, name))
             } else {
-                mangle_type(module, name)
+                mangle_name(module, name)
             }
         } else {
             t.to_c_repr().name
@@ -133,7 +131,7 @@ impl Compiler {
     fn transpile_global(&self, global: &GlobalDecl) -> String {
         let ty = self.resolve_type_to_c_name(global.inferred, "int");
         let const_prefix = if global.is_const { "const " } else { "" };
-        let global_name = mangle_global(&self.current_module, &global.name);
+        let global_name = mangle_name(&self.current_module, &global.name);
 
         match &global.init {
             Some(expr) => {
@@ -150,7 +148,7 @@ impl Compiler {
         let func_name = if func.name == "main" && !self.current_module.is_empty() {
             "main".to_string()
         } else {
-            mangle_function(&self.current_module, &func.name)
+            mangle_name(&self.current_module, &func.name)
         };
 
         let params = self.format_function_params(&func.params);
@@ -348,11 +346,29 @@ impl Compiler {
             .join(", ")
     }
 
+    fn mangled_enum_variant(&self, enum_name: &str, variant_name: &str) -> String {
+        let is_simple = self
+            .inferencer
+            .symbols()
+            .lookup_enum(enum_name)
+            .map(|e| e.variants.iter().all(|v| v.args.is_empty()))
+            .unwrap_or(false);
+        if is_simple {
+            mangle_enum_variant(&self.current_module, enum_name, variant_name)
+        } else {
+            format!(
+                "{{.{} = {}, ._variant = {{0}}}}",
+                "_discriminant",
+                mangle_enum_variant(&self.current_module, enum_name, variant_name)
+            )
+        }
+    }
+
     fn transpile_expr(&self, expr: &Expr) -> String {
         match expr {
             Expr::Identifier { name, .. } => {
                 if let Some(mod_path) = self.find_global_module(name) {
-                    mangle_global(&mod_path, name)
+                    mangle_name(&mod_path, name)
                 } else {
                     name.clone()
                 }
@@ -386,11 +402,11 @@ impl Compiler {
                     let mangled = if callee == "main" {
                         callee.clone()
                     } else if let Some(mp) = mod_path {
-                        mangle_function(&mp, &base_name)
+                        mangle_name(&mp, &base_name)
                     } else if self.inferencer.symbols().lookup_function(callee).is_some()
                         && !self.current_module.is_empty()
                     {
-                        mangle_function(&self.current_module, callee)
+                        mangle_name(&self.current_module, callee)
                     } else {
                         callee.clone()
                     };
@@ -456,54 +472,26 @@ impl Compiler {
             } => {
                 format!("{}.{}", self.transpile_expr(expr), field_name)
             }
+            Expr::EnumInit {
+                enum_name,
+                variant_name,
+                args,
+                ..
+            } if args.is_empty() => self.mangled_enum_variant(enum_name, variant_name),
             Expr::EnumVariant {
                 enum_name,
                 variant_name,
                 ..
-            } => {
-                let is_simple = self
-                    .inferencer
-                    .symbols()
-                    .lookup_enum(enum_name)
-                    .map(|e| e.variants.iter().all(|v| v.args.is_empty()))
-                    .unwrap_or(false);
-                if is_simple {
-                    mangle_enum_variant(&self.current_module, enum_name, variant_name)
-                } else {
-                    format!(
-                        "{{.{} = {}, ._variant = {{0}}}}",
-                        "_discriminant",
-                        mangle_enum_variant(&self.current_module, enum_name, variant_name)
-                    )
-                }
-            }
+            } => self.mangled_enum_variant(enum_name, variant_name),
             Expr::EnumInit {
                 enum_name,
                 variant_name,
                 args,
                 ..
             } => {
-                if args.is_empty() {
-                    let is_simple = self
-                        .inferencer
-                        .symbols()
-                        .lookup_enum(enum_name)
-                        .map(|e| e.variants.iter().all(|v| v.args.is_empty()))
-                        .unwrap_or(false);
-                    if is_simple {
-                        mangle_enum_variant(&self.current_module, enum_name, variant_name)
-                    } else {
-                        format!(
-                            "{{.{} = {}, ._variant = {{0}}}}",
-                            "_discriminant",
-                            mangle_enum_variant(&self.current_module, enum_name, variant_name)
-                        )
-                    }
-                } else {
-                    let a = self.transpile_enum_args_with_defaults(enum_name, variant_name, args);
-                    let ctor = mangle_enum_variant(&self.current_module, enum_name, variant_name);
-                    format!("{}_new({})", ctor, a)
-                }
+                let a = self.transpile_enum_args_with_defaults(enum_name, variant_name, args);
+                let ctor = mangle_enum_variant(&self.current_module, enum_name, variant_name);
+                format!("{}_new({})", ctor, a)
             }
         }
     }
