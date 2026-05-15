@@ -1,4 +1,4 @@
-use super::type_ast::{EnumDefinition, EnumVariant, Field, StructDefinition};
+use super::type_ast::{EnumDefinition, EnumVariant, StructDefinition};
 use super::types::TypeId;
 use std::collections::HashMap;
 
@@ -94,13 +94,6 @@ impl SymbolTable {
         self.structs.get(name)
     }
 
-    /// Look up a field in a struct by struct and field name.
-    pub fn lookup_struct_field(&self, struct_name: &str, field_name: &str) -> Option<&Field> {
-        self.structs
-            .get(struct_name)
-            .and_then(|s| s.fields.iter().find(|f| f.name == field_name))
-    }
-
     /// Define an enum type.
     pub fn define_enum(&mut self, def: EnumDefinition) {
         self.enums.insert(def.name.clone(), def);
@@ -147,14 +140,6 @@ impl SymbolTable {
     pub fn lookup_variant(&self, enum_name: &str, variant_name: &str) -> Option<&EnumVariantInfo> {
         let qualified_name = format!("{}.{}", enum_name, variant_name);
         self.enum_variants.get(&qualified_name)
-    }
-
-    /// Get all variant names for an enum.
-    pub fn get_enum_variants(&self, enum_name: &str) -> Vec<&EnumVariantInfo> {
-        self.enum_variants
-            .values()
-            .filter(|v| v.enum_name == enum_name)
-            .collect()
     }
 
     /// Get all registered enums.

@@ -4,7 +4,6 @@ use crate::error::CompilationError;
 use pest::iterators::Pair;
 
 use std::collections::HashSet;
-use std::ops::Deref;
 use std::str::FromStr;
 
 /// Identity handle for a type in `TypeStore`.
@@ -12,13 +11,6 @@ use std::str::FromStr;
 /// Types need stable identity for inference - we can't use the enum alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeId(u32);
-
-impl Deref for TypeId {
-    type Target = TypeId;
-    fn deref(&self) -> &Self::Target {
-        self
-    }
-}
 
 impl Default for TypeId {
     fn default() -> Self {

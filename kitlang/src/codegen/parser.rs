@@ -6,7 +6,10 @@ use crate::{Rule, parse_error};
 
 use super::ast::{Block, Expr, Function, GlobalDecl, Include, Literal, Param, Stmt};
 use super::module::{ImportType, ModuleImport, ModulePath};
-use super::type_ast::{EnumDefinition, EnumVariant, Field, FieldInit, StructDefinition};
+use super::type_ast::{
+    EnumDefinition, EnumVariant, Field, FieldInit, ImplDefinition, RuleDecl, RuleSet,
+    StructDefinition, TraitDefinition, TypeDef, UsingClause,
+};
 use super::types::{AssignmentOperator, Type, TypeId};
 use crate::error::CompileResult;
 
@@ -165,26 +168,6 @@ impl Parser {
         Ok(StructDefinition { name, fields })
     }
 
-    /// Parse a struct definition from a `type_def` wrapper by extracting the inner `struct_def`.
-    pub fn parse_struct_def_from_type_def(
-        &self,
-        pair: Pair<Rule>,
-    ) -> CompileResult<StructDefinition> {
-        // Find the struct_def rule within the type_def
-        let mut found_struct = None;
-        for child in pair.into_inner() {
-            if child.as_rule() == Rule::struct_def {
-                found_struct = Some(child);
-                break;
-            }
-        }
-
-        let struct_def_pair =
-            found_struct.ok_or(parse_error!("type_def does not contain struct_def"))?;
-
-        self.parse_struct_def(struct_def_pair)
-    }
-
     /// Parse an `enum_def` rule into an `EnumDefinition`.
     pub fn parse_enum_def(&self, pair: Pair<Rule>) -> CompileResult<EnumDefinition> {
         let mut inner = pair.into_inner();
@@ -214,21 +197,6 @@ impl Parser {
         }
 
         Ok(EnumDefinition { name, variants })
-    }
-
-    /// Parse an enum definition from a `type_def` wrapper by extracting the inner `enum_def`.
-    pub fn parse_enum_def_from_type_def(&self, pair: Pair<Rule>) -> CompileResult<EnumDefinition> {
-        let mut found_enum = None;
-        for child in pair.into_inner() {
-            if child.as_rule() == Rule::enum_def {
-                found_enum = Some(child);
-                break;
-            }
-        }
-
-        let enum_def_pair = found_enum.ok_or(parse_error!("type_def does not contain enum_def"))?;
-
-        self.parse_enum_def(enum_def_pair)
     }
 
     fn parse_enum_variant(
@@ -276,6 +244,127 @@ impl Parser {
             args,
             default: None,
         })
+    }
+
+    /// Parse a `trait_def` rule into a `TraitDefinition`.
+    pub fn parse_trait_def(&self, pair: Pair<Rule>) -> CompileResult<TraitDefinition> {
+        let mut inner = pair.into_inner();
+        // First child is metadata_and_modifiers — skip it for now
+        if inner.peek().map(|p| p.as_rule()) == Some(Rule::metadata_and_modifiers) {
+            let _ = inner.next();
+        }
+        let name = Self::pair_text(
+            inner
+                .next()
+                .filter(|p| p.as_rule() == Rule::identifier)
+                .ok_or(parse_error!("trait definition missing name"))?,
+        );
+        // Skip type_params and trait params for now
+        while inner.peek().is_some()
+            && matches!(
+                inner.peek().map(|p| p.as_rule()),
+                Some(Rule::type_params | Rule::identifier)
+            )
+        {
+            let _ = inner.next();
+        }
+        Ok(TraitDefinition {
+            name,
+            params: Vec::new(),
+            methods: Vec::new(),
+            fields: Vec::new(),
+            is_public: true,
+        })
+    }
+
+    /// Parse a `trait_impl` rule into an `ImplDefinition`.
+    pub fn parse_trait_impl(&self, pair: Pair<Rule>) -> CompileResult<ImplDefinition> {
+        let mut inner = pair.into_inner();
+        // Skip metadata_and_modifiers
+        if inner.peek().map(|p| p.as_rule()) == Some(Rule::metadata_and_modifiers) {
+            let _ = inner.next();
+        }
+        let trait_type = self.parse_type(
+            inner
+                .next()
+                .ok_or(parse_error!("trait impl missing trait type"))?,
+        )?;
+        // Skip type_params
+        while inner.peek().is_some() && inner.peek().unwrap().as_rule() == Rule::type_params {
+            let _ = inner.next();
+        }
+        // Skip "for" keyword — not a named rule, consumed implicitly
+        let for_type = self.parse_type(
+            inner
+                .next()
+                .ok_or(parse_error!("trait impl missing 'for' type"))?,
+        )?;
+        // For now, return a simple placeholder
+        Ok(ImplDefinition {
+            name: String::new(),
+            trait_type,
+            for_type,
+            params: Vec::new(),
+            methods: Vec::new(),
+        })
+    }
+
+    /// Parse a `rule_set` rule into a `RuleSet`.
+    pub fn parse_rule_set(&self, pair: Pair<Rule>) -> CompileResult<RuleSet> {
+        let mut inner = pair.into_inner();
+        let name = Self::pair_text(
+            inner
+                .next()
+                .filter(|p| p.as_rule() == Rule::identifier)
+                .ok_or(parse_error!("rule set missing name"))?,
+        );
+        let rules: Vec<RuleDecl> = inner
+            .filter(|p| p.as_rule() == Rule::rule_decl)
+            .map(|p| self.parse_rule_decl(p))
+            .collect::<Result<_, _>>()?;
+        Ok(RuleSet { name, rules })
+    }
+
+    /// Parse a `rule_decl` rule into a `RuleDecl`.
+    fn parse_rule_decl(&self, pair: Pair<Rule>) -> CompileResult<RuleDecl> {
+        let mut inner = pair.into_inner();
+        let pattern = self.parse_expr(inner.next().ok_or(parse_error!("rule missing pattern"))?)?;
+        let body = inner.next().map(|p| self.parse_expr(p)).transpose()?;
+        Ok(RuleDecl { pattern, body })
+    }
+
+    /// Parse a `typedef_stmt` rule into a `TypeDef`.
+    pub fn parse_typedef(&self, pair: Pair<Rule>) -> CompileResult<TypeDef> {
+        let mut inner = pair.into_inner();
+        // typedef_stmt = { "typedef" ~ identifier ~ "=" ~ type_annotation ~ ";" }
+        let name = Self::pair_text(inner.next().unwrap());
+        let type_pair = inner.next().unwrap();
+        let type_def = self.parse_type(type_pair)?;
+        Ok(TypeDef { name, type_def })
+    }
+
+    /// Parse a `using_stmt` rule into a `Vec<UsingClause>`.
+    pub fn parse_using(&self, pair: Pair<Rule>) -> CompileResult<Vec<UsingClause>> {
+        // using_stmt = { "using" ~ (using_clause ~ ("," ~ using_clause)*) ~ ";" }
+        let clauses: CompileResult<Vec<_>> = pair
+            .into_inner()
+            .filter(|p| p.as_rule() == Rule::using_clause)
+            .map(|p| self.parse_using_clause(p))
+            .collect();
+        clauses
+    }
+
+    /// Parse a single `using_clause` rule into a `UsingClause`.
+    fn parse_using_clause(&self, pair: Pair<Rule>) -> CompileResult<UsingClause> {
+        // using_clause = { ("rules" ~ type_annotation) | ("implicit" ~ expr) }
+        // The first alternative yields a `type_annotation` child, the second yields an `expr` child.
+        let mut inner = pair.into_inner();
+        let child = inner.next().unwrap();
+        if child.as_rule() == Rule::type_annotation {
+            Ok(UsingClause::RuleSet(self.parse_type(child)?))
+        } else {
+            Ok(UsingClause::Implicit(self.parse_expr(child)?))
+        }
     }
 
     fn parse_struct_field(&self, pair: Pair<Rule>) -> CompileResult<Field> {
@@ -593,7 +682,10 @@ impl Parser {
                     other => Err(parse_error!("Unexpected rule in unary: {other:?}")),
                 }
             }
-            Rule::identifier => Ok(Expr::Identifier(Self::pair_text(pair), TypeId::default())),
+            Rule::identifier => Ok(Expr::Identifier {
+                name: Self::pair_text(pair),
+                ty: TypeId::default(),
+            }),
             Rule::literal => {
                 // SAFETY: Grammar guarantees exactly one child in literal
                 let inner = pair.into_inner().next().unwrap();
@@ -607,14 +699,20 @@ impl Parser {
                                 let i = s.parse::<i64>().map_err(|e| {
                                     parse_error!("invalid integer literal '{s}': {:?}", e)
                                 })?;
-                                Ok(Expr::Literal(Literal::Int(i), TypeId::default()))
+                                Ok(Expr::Literal {
+                                    value: Literal::Int(i),
+                                    ty: TypeId::default(),
+                                })
                             }
                             Rule::float => {
                                 let s = num_pair.as_str();
                                 let f = s.parse::<f64>().map_err(|e| {
                                     parse_error!("invalid float literal '{s}': {:?}", e)
                                 })?;
-                                Ok(Expr::Literal(Literal::Float(f), TypeId::default()))
+                                Ok(Expr::Literal {
+                                    value: Literal::Float(f),
+                                    ty: TypeId::default(),
+                                })
                             }
                             _ => Err(parse_error!("Unexpected number type")),
                         }
@@ -631,7 +729,10 @@ impl Parser {
                 let full = pair.as_str();
                 let inner = &full[1..full.len() - 1];
                 let unescaped = Self::unescape(inner).unwrap_or_else(|| inner.to_string());
-                Ok(Expr::Literal(Literal::String(unescaped), TypeId::default()))
+                Ok(Expr::Literal {
+                    value: Literal::String(unescaped),
+                    ty: TypeId::default(),
+                })
             }
             Rule::function_call_expr => {
                 let mut inner = pair.into_inner();
@@ -667,7 +768,10 @@ impl Parser {
                 // Tokens like "null", "this", "Self", "true", "false" have no inner pairs
                 if inner.peek().is_none() {
                     match text {
-                        "null" => Ok(Expr::Literal(Literal::Null, TypeId::default())),
+                        "null" => Ok(Expr::Literal {
+                            value: Literal::Null,
+                            ty: TypeId::default(),
+                        }),
                         "true" | "false" => Self::parse_bool_literal(text),
                         // "this" => Ok(Expr::This(TypeId::default())),
                         // "Self" => Ok(Expr::SelfType),
@@ -677,10 +781,10 @@ impl Parser {
                     // Otherwise, unwrap and parse the inner rule
                     let inner_pair = inner.next().unwrap();
                     match inner_pair.as_rule() {
-                        Rule::identifier => Ok(Expr::Identifier(
-                            Self::pair_text(inner_pair),
-                            TypeId::default(),
-                        )),
+                        Rule::identifier => Ok(Expr::Identifier {
+                            name: Self::pair_text(inner_pair),
+                            ty: TypeId::default(),
+                        }),
                         Rule::literal
                         | Rule::function_call_expr
                         | Rule::array_literal
@@ -801,8 +905,14 @@ impl Parser {
 
     fn parse_bool_literal(s: &str) -> CompileResult<Expr> {
         match s {
-            "true" => Ok(Expr::Literal(Literal::Bool(true), TypeId::default())),
-            "false" => Ok(Expr::Literal(Literal::Bool(false), TypeId::default())),
+            "true" => Ok(Expr::Literal {
+                value: Literal::Bool(true),
+                ty: TypeId::default(),
+            }),
+            "false" => Ok(Expr::Literal {
+                value: Literal::Bool(false),
+                ty: TypeId::default(),
+            }),
             _ => Err(parse_error!("invalid boolean literal: {}", s)),
         }
     }

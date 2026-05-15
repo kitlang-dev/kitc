@@ -296,7 +296,7 @@ impl TypeInferencer {
     /// Infer types for an expression
     fn infer_expr(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
         let ty = match expr {
-            Expr::Identifier(name, ty_id) => {
+            Expr::Identifier { name, ty: ty_id } => {
                 // First check if it's a global variable
                 if let Some(global_ty) = self.symbols.lookup_global(name) {
                     *ty_id = global_ty;
@@ -357,7 +357,10 @@ impl TypeInferencer {
                 }
             }
 
-            Expr::Literal(lit, ty_id) => {
+            Expr::Literal {
+                value: lit,
+                ty: ty_id,
+            } => {
                 let ty = match lit {
                     Literal::Int(_) => Type::Int,
                     Literal::Float(_) => Type::Float,
@@ -735,8 +738,8 @@ impl TypeInferencer {
                     })?
                     .1;
 
-                *field_ty = *field_type_id;
-                *field_type_id
+                *field_ty = field_type_id;
+                field_type_id
             }
 
             Expr::EnumVariant {

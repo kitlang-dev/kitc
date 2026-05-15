@@ -3,6 +3,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use crate::codegen::ast::{Include, Program};
+use crate::codegen::type_ast::UsingClause;
 use crate::error::{CompilationError, CompileResult};
 
 /// A module path (e.g., `["pkg", "utils"]` -> `"pkg.utils"`).
@@ -73,7 +74,7 @@ impl fmt::Display for ModulePath {
 }
 
 /// The type of import statement, matching the Haskell compiler's ImportType.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ImportType {
     Single,
     Wildcard,
@@ -234,29 +235,27 @@ impl DependencyGraph {
     /// Sort modules so dependencies come before dependents.
     /// Returns `Err(CircularImport)` if the graph contains a cycle.
     pub fn topological_sort(&self) -> CompileResult<Vec<ModulePath>> {
-        let mut out_degree: HashMap<&ModulePath, usize> = HashMap::new();
+        let mut remaining_deps: HashMap<&ModulePath, usize> = HashMap::new();
         for path in self.nodes.keys() {
-            out_degree.entry(path).or_insert(0);
+            remaining_deps.entry(path).or_insert(0);
         }
         for (from, deps) in &self.adjacency {
             if !deps.is_empty() {
-                *out_degree.entry(from).or_insert(0) += deps.len();
+                *remaining_deps.entry(from).or_insert(0) += deps.len();
             }
         }
 
         let mut queue: VecDeque<&ModulePath> = VecDeque::new();
-        for (path, degree) in &out_degree {
+        for (path, degree) in &remaining_deps {
             if *degree == 0 {
                 queue.push_back(path);
             }
         }
 
         let mut sorted: Vec<ModulePath> = Vec::new();
-        let mut in_result: HashSet<&ModulePath> = HashSet::new();
         while let Some(path) = queue.pop_front() {
-            in_result.insert(path);
             sorted.push(path.clone());
-            self.dequeue_dependents(path, &mut out_degree, &mut queue);
+            self.dequeue_dependents(path, &mut remaining_deps, &mut queue);
         }
 
         if sorted.len() != self.nodes.len() {
@@ -291,14 +290,14 @@ impl DependencyGraph {
     fn dequeue_dependents<'a>(
         &'a self,
         path: &ModulePath,
-        out_degree: &mut HashMap<&'a ModulePath, usize>,
+        remaining_deps: &mut HashMap<&'a ModulePath, usize>,
         queue: &mut VecDeque<&'a ModulePath>,
     ) {
         let Some(dependents) = self.reverse_adjacency.get(path) else {
             return;
         };
         for depender in dependents {
-            let Some(degree) = out_degree.get_mut(depender) else {
+            let Some(degree) = remaining_deps.get_mut(depender) else {
                 continue;
             };
             *degree = degree.saturating_sub(1);
@@ -374,12 +373,14 @@ pub enum NameBinding {
 ///
 /// Analogous to the Haskell compiler's `SyntacticBinding` variants:
 /// `TypeBinding`, `FunctionBinding`, `VarBinding`, etc.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DeclKind {
     Function,
     Global,
     Struct,
     Enum,
+    Trait,
+    RuleSet,
 }
 
 /// A declaration binding: a name declared in a specific module with a specific kind.
@@ -443,6 +444,8 @@ pub struct Module {
     pub includes: Vec<Include>,
     pub program: Program,
     pub is_c_module: bool,
+    /// `using` statements for implicit conversions and rule set imports.
+    pub mod_using: Vec<UsingClause>,
 }
 
 impl Module {
@@ -460,6 +463,7 @@ impl Module {
             includes,
             program,
             is_c_module: false,
+            mod_using: Vec::new(),
         }
     }
 }
@@ -534,6 +538,12 @@ impl ModuleRegistry {
         for e in &module.program.enums {
             self.register_decl(e.name.clone(), DeclKind::Enum, p);
         }
+        for t in &module.program.traits {
+            self.register_decl(t.name.clone(), DeclKind::Trait, p);
+        }
+        for r in &module.program.rulesets {
+            self.register_decl(r.name.clone(), DeclKind::RuleSet, p);
+        }
     }
 
     fn register_module_binding(&mut self, module: &Module) -> CompileResult<()> {
@@ -573,13 +583,32 @@ impl ModuleRegistry {
         candidates.first().map(|d| d.module.clone())
     }
 
+    /// Check whether an extern-visible name has already been registered by another module.
+    /// Returns `DuplicateSymbol` if the name already exists in the binding table.
+    pub fn check_extern_name(&self, name: &str) -> Result<(), CompilationError> {
+        let extern_key = format!("extern.{}", name);
+        if self.bindings.contains(&extern_key) {
+            return Err(CompilationError::DuplicateSymbol {
+                name: name.to_string(),
+                module: "extern (global namespace)".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Register an extern-visible name in the binding table to prevent duplicates.
+    pub fn register_extern_name(&mut self, name: &str) -> Result<(), CompilationError> {
+        let extern_key = format!("extern.{}", name);
+        self.bindings.insert(extern_key, NameBinding::Extern)
+    }
+
     /// Find the declaration kind for a name in a specific module, if known.
     pub fn find_decl_kind(&self, name: &str, module: &ModulePath) -> Option<DeclKind> {
         let candidates = self.declarations.get(name)?;
         candidates
             .iter()
             .find(|d| d.module == *module)
-            .map(|d| d.kind.clone())
+            .map(|d| d.kind)
     }
 
     /// Resolve a potentially qualified name into (module_path, base_name).
@@ -619,11 +648,8 @@ impl ModuleRegistry {
             if let Some(module) = self.modules.get(path) {
                 for import in &module.imports {
                     if self.modules.contains_key(&import.path) {
-                        self.graph.add_edge(
-                            path.clone(),
-                            import.path.clone(),
-                            import.import_type.clone(),
-                        );
+                        self.graph
+                            .add_edge(path.clone(), import.path.clone(), import.import_type);
                     }
                 }
             }

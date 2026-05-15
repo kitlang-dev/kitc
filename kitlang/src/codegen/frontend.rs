@@ -12,6 +12,7 @@ use crate::codegen::{
     inference::TypeInferencer,
     module::{ImportType, Module, ModuleImport, ModulePath, ModuleRegistry},
     parser::Parser as CodeParser,
+    type_ast::UsingClause,
 };
 use crate::error::CompileResult;
 use crate::{KitParser, Rule, error::CompilationError};
@@ -106,7 +107,7 @@ fn determine_module_path(file: &Path, source_paths: &[(PathBuf, ModulePath)]) ->
     ModulePath(vec![stem.to_owned()])
 }
 /// Collect all `.kit` file paths in a directory (non-recursive), excluding `prelude.kit`.
-fn collect_kit_files_in_dir(dir: &Path, base_path: &ModulePath) -> Vec<ModulePath> {
+fn collect_kit_files_in_dir_shallow(dir: &Path, base_path: &ModulePath) -> Vec<ModulePath> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -182,7 +183,7 @@ fn resolve_wildcard_import(
                 if !dir_path.is_dir() {
                     continue;
                 }
-                results.extend(collect_kit_files_in_dir(&dir_path, path));
+                results.extend(collect_kit_files_in_dir_shallow(&dir_path, path));
             }
             results.sort_by_key(|a| a.join("."));
             Ok(results)
@@ -202,8 +203,16 @@ fn resolve_wildcard_import(
     }
 }
 
-/// Parse a single `.kit` file, returning its includes, imports, and AST.
-fn parse_kit_file(file: &Path) -> CompileResult<(Vec<Include>, Vec<ModuleImport>, Program)> {
+/// The result of parsing a single `.kit` file.
+struct ParsedFile {
+    includes: Vec<Include>,
+    imports: Vec<ModuleImport>,
+    program: Program,
+    usings: Vec<UsingClause>,
+}
+
+/// Parse a single `.kit` file, returning a `ParsedFile`.
+fn parse_kit_file(file: &Path) -> CompileResult<ParsedFile> {
     debug_assert!(
         file.exists(),
         "parse_kit_file: no such file: {}",
@@ -221,6 +230,11 @@ fn parse_kit_file(file: &Path) -> CompileResult<(Vec<Include>, Vec<ModuleImport>
     let mut functions = Vec::new();
     let mut structs = Vec::new();
     let mut enums = Vec::new();
+    let mut traits = Vec::new();
+    let mut impls = Vec::new();
+    let mut rulesets = Vec::new();
+    let mut typedefs = Vec::new();
+    let mut usings = Vec::new();
 
     for pair in pairs {
         match pair.as_rule() {
@@ -237,6 +251,11 @@ fn parse_kit_file(file: &Path) -> CompileResult<(Vec<Include>, Vec<ModuleImport>
                     }
                 }
             }
+            Rule::trait_def => traits.push(parser.parse_trait_def(pair)?),
+            Rule::trait_impl => impls.push(parser.parse_trait_impl(pair)?),
+            Rule::rule_set => rulesets.push(parser.parse_rule_set(pair)?),
+            Rule::typedef_stmt => typedefs.push(parser.parse_typedef(pair)?),
+            Rule::using_stmt => usings.extend(parser.parse_using(pair)?),
             _ => {}
         }
     }
@@ -247,9 +266,18 @@ fn parse_kit_file(file: &Path) -> CompileResult<(Vec<Include>, Vec<ModuleImport>
         functions,
         structs,
         enums,
+        traits,
+        impls,
+        rulesets,
+        typedefs,
     };
 
-    Ok((includes, imports, program))
+    Ok(ParsedFile {
+        includes,
+        imports,
+        program,
+        usings,
+    })
 }
 
 /// Resolve prelude modules for a given module path.
@@ -318,11 +346,16 @@ fn load_module_recursive(
 
     loaded.insert(canonical.clone());
 
-    let (includes, imports, program) = parse_kit_file(file).inspect_err(|_| {
+    let parsed = parse_kit_file(file).inspect_err(|_| {
         let module_path = determine_module_path(file, source_paths);
         registry.failed.insert(module_path);
     })?;
-
+    let ParsedFile {
+        includes,
+        imports,
+        program,
+        usings,
+    } = parsed;
     let module_path = determine_module_path(file, source_paths);
 
     // Load preludes first (following Haskell compiler convention).
@@ -358,16 +391,18 @@ fn load_module_recursive(
         }
     }
 
-    let module = Module::new(
-        module_path.clone(),
-        canonical.clone(),
-        resolved_imports.clone(),
+    let module = Module {
+        path: module_path.clone(),
+        source_path: canonical.clone(),
+        imports: resolved_imports.clone(),
         includes,
-        Program {
+        program: Program {
             module_path: Some(module_path.clone()),
             ..program
         },
-    );
+        is_c_module: false,
+        mod_using: usings,
+    };
 
     registry.register(module);
 

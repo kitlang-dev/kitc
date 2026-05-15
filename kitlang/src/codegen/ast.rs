@@ -1,7 +1,9 @@
 use crate::codegen::types::{AssignmentOperator, BinaryOperator, Type, TypeId, UnaryOperator};
 
 use super::ModulePath;
-use super::type_ast::{EnumDefinition, FieldInit, StructDefinition};
+use super::type_ast::{
+    EnumDefinition, FieldInit, ImplDefinition, RuleSet, StructDefinition, TraitDefinition, TypeDef,
+};
 
 /// Represents a C header inclusion.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -118,9 +120,9 @@ pub enum Stmt {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
     /// Variable or function identifier.
-    Identifier(String, TypeId),
+    Identifier { name: String, ty: TypeId },
     /// Literal value.
-    Literal(Literal, TypeId),
+    Literal { value: Literal, ty: TypeId },
     /// Function call.
     Call {
         /// Name of the callee function.
@@ -293,6 +295,14 @@ pub struct Program {
     pub structs: Vec<StructDefinition>,
     /// Enum type definitions.
     pub enums: Vec<EnumDefinition>,
+    /// Trait definitions.
+    pub traits: Vec<TraitDefinition>,
+    /// Trait implementations.
+    pub impls: Vec<ImplDefinition>,
+    /// Rewrite rule sets.
+    pub rulesets: Vec<RuleSet>,
+    /// Type alias definitions.
+    pub typedefs: Vec<TypeDef>,
 }
 
 impl Program {
@@ -304,6 +314,10 @@ impl Program {
             functions: Vec::new(),
             structs: Vec::new(),
             enums: Vec::new(),
+            traits: Vec::new(),
+            impls: Vec::new(),
+            rulesets: Vec::new(),
+            typedefs: Vec::new(),
         }
     }
 }

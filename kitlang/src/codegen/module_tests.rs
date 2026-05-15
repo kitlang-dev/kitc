@@ -111,27 +111,24 @@ fn test_declaration_registration() {
     let mut registry = ModuleRegistry::new();
     let mod_path = ModulePath::from_parts(&["test_mod"]);
 
-    let program = Program {
-        module_path: Some(mod_path.clone()),
-        globals: vec![GlobalDecl {
-            name: "GLOBAL".to_string(),
-            annotation: None,
-            inferred: TypeId::default(),
-            init: None,
-            is_const: false,
-            is_public: true,
-        }],
-        functions: vec![Function {
-            name: "my_func".to_string(),
-            params: vec![],
-            return_type: None,
-            inferred_return: None,
-            body: Block { stmts: vec![] },
-            is_public: true,
-        }],
-        structs: vec![],
-        enums: vec![],
-    };
+    let mut program = Program::empty();
+    program.module_path = Some(mod_path.clone());
+    program.globals = vec![GlobalDecl {
+        name: "GLOBAL".to_string(),
+        annotation: None,
+        inferred: TypeId::default(),
+        init: None,
+        is_const: false,
+        is_public: true,
+    }];
+    program.functions = vec![Function {
+        name: "my_func".to_string(),
+        params: vec![],
+        return_type: None,
+        inferred_return: None,
+        body: Block { stmts: vec![] },
+        is_public: true,
+    }];
 
     let module = Module::new(
         mod_path.clone(),
@@ -169,20 +166,16 @@ fn test_resolve_qualified_name_simple() {
     let mut registry = ModuleRegistry::new();
     let mod_path = ModulePath::from_parts(&["math"]);
 
-    let program = Program {
-        module_path: Some(mod_path.clone()),
-        globals: vec![],
-        functions: vec![Function {
-            name: "add".to_string(),
-            params: vec![],
-            return_type: None,
-            inferred_return: None,
-            body: Block { stmts: vec![] },
-            is_public: true,
-        }],
-        structs: vec![],
-        enums: vec![],
-    };
+    let mut program = Program::empty();
+    program.module_path = Some(mod_path.clone());
+    program.functions = vec![Function {
+        name: "add".to_string(),
+        params: vec![],
+        return_type: None,
+        inferred_return: None,
+        body: Block { stmts: vec![] },
+        is_public: true,
+    }];
     registry.register(Module::new(
         mod_path.clone(),
         PathBuf::from("math.kit"),
@@ -203,20 +196,16 @@ fn test_resolve_qualified_name_dotted() {
     let mut registry = ModuleRegistry::new();
     let mod_path = ModulePath::from_parts(&["pkg", "math"]);
 
-    let program = Program {
-        module_path: Some(mod_path.clone()),
-        globals: vec![],
-        functions: vec![Function {
-            name: "add".to_string(),
-            params: vec![],
-            return_type: None,
-            inferred_return: None,
-            body: Block { stmts: vec![] },
-            is_public: true,
-        }],
-        structs: vec![],
-        enums: vec![],
-    };
+    let mut program = Program::empty();
+    program.module_path = Some(mod_path.clone());
+    program.functions = vec![Function {
+        name: "add".to_string(),
+        params: vec![],
+        return_type: None,
+        inferred_return: None,
+        body: Block { stmts: vec![] },
+        is_public: true,
+    }];
     registry.register(Module::new(
         mod_path.clone(),
         PathBuf::from("pkg/math.kit"),

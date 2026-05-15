@@ -241,6 +241,10 @@ impl Compiler {
                         .filter(|e| enum_names.contains(&e.name))
                         .cloned()
                         .collect(),
+                    traits: vec![],
+                    impls: vec![],
+                    rulesets: vec![],
+                    typedefs: vec![],
                 };
 
                 let header = self.generate_module_header_from_program(&filtered, module);
@@ -318,15 +322,7 @@ impl Compiler {
         }
 
         for func in &prog.functions {
-            let ret = if func.name == "main" {
-                "int".to_string()
-            } else {
-                func.inferred_return
-                    .and_then(|id| self.inferencer.store.resolve(id).ok())
-                    .map(|t| t.to_c_repr().name)
-                    .or_else(|| func.return_type.as_ref().map(|t| t.to_c_repr().name))
-                    .unwrap_or_else(|| "void".to_string())
-            };
+            let ret = self.resolve_return_type_c_name(func);
             let fname = if func.name == "main" {
                 "main".to_string()
             } else {
@@ -412,6 +408,18 @@ impl Compiler {
     }
 
     /// Transpile a global variable declaration to C.
+    /// Resolve a function's return type to its C name, defaulting to "int" for main and "void" otherwise.
+    fn resolve_return_type_c_name(&self, func: &Function) -> String {
+        if func.name == "main" {
+            return "int".to_string();
+        }
+        func.inferred_return
+            .and_then(|id| self.inferencer.store.resolve(id).ok())
+            .map(|t| t.to_c_repr().name)
+            .or_else(|| func.return_type.as_ref().map(|t| t.to_c_repr().name))
+            .unwrap_or_else(|| "void".to_string())
+    }
+
     fn transpile_global(&self, global: &GlobalDecl) -> String {
         let ty = self.resolve_type_to_c_name(global.inferred, "int");
         let const_prefix = if global.is_const { "const " } else { "" };
@@ -587,15 +595,7 @@ impl Compiler {
     /// Transpile a Kit function definition to C code.
     fn transpile_function(&self, func: &Function) -> String {
         debug_assert!(!func.name.is_empty(), "function with empty name");
-        let return_type = if func.name == "main" {
-            "int".to_string()
-        } else {
-            func.inferred_return
-                .and_then(|id| self.inferencer.store.resolve(id).ok())
-                .map(|t| t.to_c_repr().name)
-                .or_else(|| func.return_type.as_ref().map(|t| t.to_c_repr().name))
-                .unwrap_or_else(|| "void".to_string())
-        };
+        let return_type = self.resolve_return_type_c_name(func);
 
         let func_name = if func.name == "main" && !self.current_module.is_empty() {
             "main".to_string()
@@ -810,14 +810,14 @@ impl Compiler {
     /// Transpile a Kit expression to a C expression string.
     fn transpile_expr(&self, expr: &Expr) -> String {
         match expr {
-            Expr::Identifier(name, _) => {
+            Expr::Identifier { name, .. } => {
                 if let Some(mod_path) = self.find_global_module(name) {
                     mangle_global(&mod_path, name)
                 } else {
                     name.clone()
                 }
             }
-            Expr::Literal(lit, _) => lit.to_c(),
+            Expr::Literal { value: lit, .. } => lit.to_c(),
             Expr::Call {
                 callee,
                 args,

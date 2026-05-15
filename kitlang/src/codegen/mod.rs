@@ -24,7 +24,10 @@ pub use module::{
     DeclBinding, DeclKind, DependencyEdge, DependencyGraph, ImportType, Module, ModuleImport,
     ModuleNode, ModulePath, ModuleRegistry, NameBinding,
 };
-pub use type_ast::{Field, FieldInit, StructDefinition};
+pub use type_ast::{
+    Field, FieldInit, ImplDefinition, RuleDecl, RuleSet, StructDefinition, TraitDefinition,
+    TypeDef, TypeParam, UsingClause,
+};
 
 /// Compiler orchestration: module loading, graph building, and C compilation.
 pub mod frontend;
