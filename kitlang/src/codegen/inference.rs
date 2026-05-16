@@ -543,7 +543,10 @@ impl TypeInferencer {
 
                 // Look up struct definition in symbol table using the resolved type
                 let struct_def = {
-                    let resolved = self.store.resolve(resolved_ty)?;
+                    let resolved = self
+                        .store
+                        .resolve(resolved_ty)
+                        .map_err(CompilationError::TypeError)?;
                     match resolved {
                         Type::Named(name) => self
                             .symbols
@@ -645,7 +648,10 @@ impl TypeInferencer {
                 let container_ty = self.infer_expr(expr)?;
 
                 // Resolve container type, handle both Struct and Named types
-                let resolved = self.store.resolve(container_ty)?;
+                let resolved = self
+                    .store
+                    .resolve(container_ty)
+                    .map_err(CompilationError::TypeError)?;
 
                 // For Named types, we need to look up the struct or enum definition
                 let (struct_name, fields) = match resolved {

@@ -46,3 +46,6 @@ pub mod transpile;
 
 /// Type system representation and C type mapping.
 pub mod types;
+
+#[cfg(test)]
+mod ast_tests;

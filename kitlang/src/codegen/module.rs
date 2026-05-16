@@ -189,8 +189,24 @@ impl DependencyGraph {
         self.nodes.get(path)
     }
 
-    pub fn get_source_path(&self, path: &ModulePath) -> Option<&PathBuf> {
-        self.nodes.get(path).map(|n| &n.source_path)
+    /// Returns `true` if `path` has no outgoing edges (no dependencies).
+    ///
+    /// Leaf modules, modules with zero dependencies, are the natural starting points in a
+    /// topological sort.
+    // Potential future uses:
+    // - **Parallel compilation**: batch leaves together for concurrent codegen since don't block
+    //   each other.
+    // - **Incremental builds**: if a leaf hasn't changed, its dependents may be the only modules
+    //   that need recompilation.
+    // - **Import validation**: importing a leaf is acyclic by definition - no cycle-detection
+    //   needed.
+    // - **Pruning**: repeated leaf removal ("prune") reveals the strongly connected core of a
+    //   dependency graph.
+    pub fn is_leaf_module(&self, path: &ModulePath) -> bool {
+        self.adjacency
+            .get(path)
+            .map(|deps| deps.is_empty())
+            .unwrap_or(true)
     }
 
     /// All modules that `path` directly depends on.
@@ -207,14 +223,6 @@ impl DependencyGraph {
             .get(path)
             .map(|deps| deps.iter().collect())
             .unwrap_or_default()
-    }
-
-    /// Returns `true` if `path` has no outgoing edges (no dependencies).
-    pub fn is_leaf_module(&self, path: &ModulePath) -> bool {
-        self.adjacency
-            .get(path)
-            .map(|deps| deps.is_empty())
-            .unwrap_or(true)
     }
 
     pub fn module_count(&self) -> usize {
@@ -240,8 +248,8 @@ impl DependencyGraph {
         }
 
         let mut queue: VecDeque<&ModulePath> = VecDeque::new();
-        for (path, degree) in &remaining_deps {
-            if *degree == 0 {
+        for path in self.nodes.keys() {
+            if self.is_leaf_module(path) {
                 queue.push_back(path);
             }
         }
@@ -683,27 +691,8 @@ impl ModuleRegistry {
         self.modules.values().collect()
     }
 
-    /// All registered modules (owned values).
-    pub fn into_modules(self) -> Vec<Module> {
-        self.modules.into_values().collect()
-    }
-
     pub fn module_count(&self) -> usize {
         self.modules.len()
-    }
-
-    /// Collect all unique include directives across all modules.
-    pub fn collect_all_includes(&self) -> Vec<Include> {
-        let mut seen = HashSet::new();
-        let mut result = Vec::new();
-        for module in self.modules.values() {
-            for inc in &module.includes {
-                if seen.insert(inc.path.clone()) {
-                    result.push(inc.clone());
-                }
-            }
-        }
-        result
     }
 }
 

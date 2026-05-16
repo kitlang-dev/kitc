@@ -248,7 +248,7 @@ impl Parser {
     /// Parse a `trait_def` rule into a `TraitDefinition`.
     pub fn parse_trait_def(&self, pair: Pair<Rule>) -> CompileResult<TraitDefinition> {
         let mut inner = pair.into_inner();
-        // First child is metadata_and_modifiers — skip it for now
+        // First child is metadata_and_modifiers - skip it for now
         if inner.peek().map(|p| p.as_rule()) == Some(Rule::metadata_and_modifiers) {
             let _ = inner.next();
         }
@@ -292,7 +292,7 @@ impl Parser {
         while inner.peek().is_some() && inner.peek().unwrap().as_rule() == Rule::type_params {
             let _ = inner.next();
         }
-        // Skip "for" keyword — not a named rule, consumed implicitly
+        // Skip "for" keyword - not a named rule, consumed implicitly
         let for_type = self.parse_type(
             inner
                 .next()

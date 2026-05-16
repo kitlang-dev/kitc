@@ -417,7 +417,7 @@ fn simple_c_type(name: &str, headers: &[&str]) -> CRepr {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BinaryOperator {
     Add,
     Sub,

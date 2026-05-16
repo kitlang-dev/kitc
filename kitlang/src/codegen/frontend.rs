@@ -3,6 +3,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::slice;
 
 use pest::Parser;
 
@@ -596,10 +597,8 @@ impl Compiler {
         self.current_module = ModulePath::new();
 
         let mut merged = merge_modules_for_inference(&self.registry, &sorted_paths);
-        self.inferencer.infer_program(&mut merged).ok();
+        self.inferencer.infer_program(&mut merged)?;
         self.transpile_with_program(&merged)?;
-
-        let detected = Toolchain::executable_path().ok_or(CompilationError::ToolchainNotFound)?;
 
         let target_path = self
             .output
@@ -608,49 +607,37 @@ impl Compiler {
             .into_string()
             .map_err(|_| CompilationError::InvalidOutputPath)?;
 
-        let mut source_strs: Vec<String> = Vec::new();
-        for c_file in &module_c_files {
-            source_strs.push(c_file.to_string_lossy().into_owned());
+        let source_strs: Vec<String> = module_c_files
+            .iter()
+            .map(|c_file| c_file.to_string_lossy().into_owned())
+            .collect();
+
+        let (detected_toolchain, detected_path) =
+            Toolchain::executable_path().ok_or(CompilationError::ToolchainNotFound)?;
+
+        if matches!(detected_toolchain, Toolchain::Other) {
+            return Err(CompilationError::UnsupportedToolchain(
+                detected_path.display().to_string(),
+            ));
         }
 
-        let source_refs: Vec<&str> = source_strs.iter().map(|s| s.as_str()).collect();
-
-        let opts = CompilerOptions::new(CompilerMeta(detected.0))
+        let opts = CompilerOptions::new(CompilerMeta(detected_toolchain))
+            .compiler_path(detected_path)
             .link_libs(&self.libs)
             .lib_paths(&["/usr/local/lib"])
-            .sources(&source_refs)
+            .sources(&source_strs)
             .output(&target_path)
+            .includes(slice::from_ref(&self.build_dir))
             .build();
 
-        let mut cmd = Command::new(&detected.1);
-        let compiler_flags = detected.0.get_compiler_flags();
-        cmd.args(&compiler_flags);
+        let (compiler_path, args) = opts
+            .build_invocation()
+            .map_err(CompilationError::CompileError)?;
 
-        for src in &source_strs {
-            cmd.arg(src);
-        }
-
-        let build_dir_str = self.build_dir.to_string_lossy();
-        cmd.arg(format!("-I{build_dir_str}"));
-
-        match detected.0 {
-            Toolchain::Gcc | Toolchain::Clang => {
-                cmd.arg("-o").arg(&self.output);
-            }
-            #[cfg(windows)]
-            Toolchain::Msvc => {
-                cmd.arg(format!("/Fe:{}", self.output.display()));
-            }
-            Toolchain::Other => {
-                return Err(CompilationError::UnsupportedToolchain(
-                    detected.1.display().to_string(),
-                ));
-            }
-        }
-
-        cmd.args(&opts.link_opts);
-
-        let output = cmd.output().map_err(CompilationError::Io)?;
+        let output = Command::new(compiler_path)
+            .args(&args)
+            .output()
+            .map_err(CompilationError::Io)?;
         let status = output.status;
 
         if !status.success() {

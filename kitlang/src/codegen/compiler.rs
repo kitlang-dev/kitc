@@ -174,11 +174,15 @@ fn resolve_cc_toolchain(path: &Path) -> Toolchain {
 #[derive(Debug, Clone)]
 pub struct CompilerOptions {
     pub toolchain: Toolchain,
+    /// Path to the compiler executable (cached to avoid re-detection)
+    pub compiler_path: Option<PathBuf>,
     /// Source files to compile
     pub sources: Vec<PathBuf>,
     /// Single output (target) file
     pub output: Option<PathBuf>,
     pub link_opts: Vec<String>,
+    /// Include search paths (`-I` flags)
+    pub includes: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -189,9 +193,11 @@ impl CompilerOptions {
     pub const fn new(base_meta: CompilerMeta) -> Self {
         Self {
             toolchain: base_meta.0,
+            compiler_path: None,
             sources: Vec::new(),
             output: None,
             link_opts: Vec::new(),
+            includes: Vec::new(),
         }
     }
 
@@ -251,21 +257,30 @@ impl CompilerOptions {
         self
     }
 
-    pub fn build(self) -> CompilerOptions {
+    /// Set the compiler executable path (avoids re-detection).
+    pub fn compiler_path(mut self, path: PathBuf) -> Self {
+        self.compiler_path = Some(path);
         self
     }
 
-    /// Build the compiler invocation used to spawn `Command`.
+    /// Add include search paths (`-I` flags).
+    pub fn includes<P: Into<PathBuf> + Clone>(mut self, items: &[P]) -> Self {
+        for i in items {
+            self.includes.push(i.clone().into());
+        }
+        self
+    }
+
+    /// Build the compiler invocation.
     ///
-    /// Returns (`path_to_compiler_executable`, `args_vec`).
+    /// Returns `(path_to_compiler_executable, args_vec)`.
     ///
     /// # Errors
     ///
     /// - if `sources` is empty
     /// - if `output` is not set
-    /// - if no system compiler can be found and no `enforced_toolchain` is usable
+    /// - if no system compiler can be found and no `compiler_path` was set
     pub fn build_invocation(&self) -> Result<(PathBuf, Vec<String>), String> {
-        // Basic validation
         if self.sources.is_empty() {
             return Err("no source files specified in CompilerOptions".into());
         }
@@ -274,25 +289,32 @@ impl CompilerOptions {
             .as_ref()
             .ok_or_else(|| "output (target) path not set in CompilerOptions".to_string())?;
 
-        // Determine compiler: prefer enforced_toolchain if given and resolvable; otherwise system compiler
-        let Some((toolchain, compiler_path)) = Toolchain::executable_path() else {
-            return Err("no system compiler found".to_string());
-        };
+        let compiler_path = self
+            .compiler_path
+            .clone()
+            .or_else(|| Toolchain::executable_path().map(|(_, p)| p))
+            .ok_or_else(|| "no system compiler found".to_string())?;
 
-        // Now assemble args in a clear order:
-        // [ <sources...>, <output_flag>, <output>, <compiler_flags...>, <link_opts...> ]
         let mut args = Vec::new();
+
+        for inc in &self.includes {
+            args.push(format!("-I{}", inc.display()));
+        }
 
         for s in &self.sources {
             args.push(s.display().to_string());
         }
 
-        args.push(toolchain.output_flag().to_string());
+        args.push(self.toolchain.output_flag().to_string());
         args.push(out.display().to_string());
 
-        args.extend(toolchain.get_compiler_flags());
+        args.extend(self.toolchain.get_compiler_flags());
         args.extend(self.link_opts.clone());
 
         Ok((compiler_path, args))
+    }
+
+    pub fn build(self) -> CompilerOptions {
+        self
     }
 }
