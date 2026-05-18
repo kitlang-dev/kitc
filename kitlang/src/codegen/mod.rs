@@ -18,7 +18,9 @@ pub mod type_ast;
 
 // -- Re-exports --
 
-pub use ast::{Block, Expr, Function, GlobalDecl, Include, Literal, Param, Program, Stmt};
+pub use ast::{
+    Block, Expr, Function, GlobalDecl, Include, Literal, MetaArg, Metadata, Param, Program, Stmt,
+};
 pub use compiler::Toolchain;
 pub use module::{
     DeclBinding, DeclKind, DependencyEdge, DependencyGraph, ImportType, Module, ModuleImport,
@@ -49,3 +51,6 @@ pub mod types;
 
 #[cfg(test)]
 mod ast_tests;
+
+#[cfg(test)]
+mod metadata_tests;

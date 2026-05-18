@@ -131,24 +131,38 @@ impl Compiler {
     fn transpile_global(&self, global: &GlobalDecl) -> String {
         let ty = self.resolve_type_to_c_name(global.inferred, "int");
         let const_prefix = if global.is_const { "const " } else { "" };
-        let global_name = mangle_name(&self.current_module, &global.name);
+        let module = if global.has_no_mangle() {
+            ModulePath::new()
+        } else {
+            self.current_module.clone()
+        };
+        let global_name = mangle_name(&module, &global.name);
+        let extern_prefix = if global.is_extern() { "extern " } else { "" };
 
         match &global.init {
             Some(expr) => {
                 let init_str = self.transpile_expr(expr);
-                format!("{const_prefix}{ty} {} = {init_str};", global_name)
+                format!(
+                    "{extern_prefix}{const_prefix}{ty} {} = {init_str};",
+                    global_name
+                )
             }
-            None => format!("{const_prefix}{ty} {};", global_name),
+            None => format!("{extern_prefix}{const_prefix}{ty} {};", global_name),
         }
     }
 
     fn transpile_function(&self, func: &Function) -> String {
         debug_assert!(!func.name.is_empty(), "function with empty name");
         let return_type = self.resolve_return_type_c_name(func);
+        let module = if func.has_no_mangle() {
+            ModulePath::new()
+        } else {
+            self.current_module.clone()
+        };
         let func_name = if func.name == "main" && !self.current_module.is_empty() {
             "main".to_string()
         } else {
-            mangle_name(&self.current_module, &func.name)
+            mangle_name(&module, &func.name)
         };
 
         let params = self.format_function_params(&func.params);
@@ -161,7 +175,11 @@ impl Compiler {
             }
         }
 
-        format!("{} {}({}) {}", return_type, func_name, params, body_code)
+        let extern_prefix = if func.is_extern() { "extern " } else { "" };
+        format!(
+            "{extern_prefix}{} {}({}) {}",
+            return_type, func_name, params, body_code
+        )
     }
 
     fn transpile_block(&self, block: &Block) -> String {
@@ -243,6 +261,14 @@ impl Compiler {
             .iter()
             .find(|m| m.program.globals.iter().any(|g| g.name == name))
             .map(|m| m.path.clone())
+    }
+
+    /// Check if a function is marked #[extern] or #[expose] in its defining module.
+    fn has_no_mangle_function(&self, mod_path: &ModulePath, name: &str) -> bool {
+        self.registry
+            .get(mod_path)
+            .and_then(|m| m.program.functions.iter().find(|f| f.name == name))
+            .is_some_and(|f| f.has_no_mangle())
     }
 
     /// Remove intermediate `.c` and `.h` files from the build directory.
@@ -402,7 +428,11 @@ impl Compiler {
                     let mangled = if callee == "main" {
                         callee.clone()
                     } else if let Some(mp) = mod_path {
-                        mangle_name(&mp, &base_name)
+                        if self.has_no_mangle_function(&mp, &base_name) {
+                            base_name.clone()
+                        } else {
+                            mangle_name(&mp, &base_name)
+                        }
                     } else if self.inferencer.symbols().lookup_function(callee).is_some()
                         && !self.current_module.is_empty()
                     {

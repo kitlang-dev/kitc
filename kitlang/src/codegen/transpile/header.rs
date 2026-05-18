@@ -82,7 +82,7 @@ impl Compiler {
             }
         }
         for path in &all_c_includes {
-            writeln!(out, "#include \"{}\"", path).unwrap();
+            let _ = writeln!(out, "#include \"{}\"", path);
         }
         if !all_c_includes.is_empty() {
             out.push('\n');
@@ -92,7 +92,7 @@ impl Compiler {
             collect_type_headers_and_decls(&self.inferencer, prog);
 
         for hdr in &seen_headers {
-            writeln!(out, "#include {hdr}").unwrap();
+            let _ = writeln!(out, "#include {hdr}");
         }
         out.push('\n');
 
@@ -178,20 +178,20 @@ impl Compiler {
     ) -> String {
         let mut out = String::new();
         let guard = format!("KIT_MODULE_{}_H", module.path.join("_").to_uppercase());
-        writeln!(out, "#ifndef {}", guard).unwrap();
-        writeln!(out, "#define {}", guard).unwrap();
+        let _ = writeln!(out, "#ifndef {}", guard);
+        let _ = writeln!(out, "#define {}", guard);
         out.push('\n');
 
         let seen_headers = collect_type_headers_and_decls(&self.inferencer, prog).0;
         for hdr in &seen_headers {
-            writeln!(out, "#include {hdr}").unwrap();
+            let _ = writeln!(out, "#include {hdr}");
         }
         out.push('\n');
 
         for import in &module.imports {
             if self.registry.contains(&import.path) {
                 let dep = format!("{}.h", import.path.join("_"));
-                writeln!(out, "#include \"{}\"", dep).unwrap();
+                let _ = writeln!(out, "#include \"{}\"", dep);
             }
         }
         if !module.imports.is_empty() {
@@ -209,7 +209,7 @@ impl Compiler {
         }
 
         for global in &prog.globals {
-            if global.is_public {
+            if global.is_public || global.is_extern() {
                 let ty = match self.inferencer.store.resolve(global.inferred) {
                     Ok(t) => self.type_to_c_name_with_module(&t, &module.path),
                     Err(_) => global
@@ -218,28 +218,39 @@ impl Compiler {
                         .map(|a| a.to_c_repr().name)
                         .unwrap_or_else(|| "int".to_string()),
                 };
-                let gname = mangle_name(&module.path, &global.name);
+                let mod_path = if global.has_no_mangle() {
+                    ModulePath::new()
+                } else {
+                    module.path.clone()
+                };
+                let gname = mangle_name(&mod_path, &global.name);
                 let const_ = if global.is_const { "const " } else { "" };
-                writeln!(out, "extern {const_}{ty} {};", gname).unwrap();
+                let _ = writeln!(out, "extern {const_}{ty} {};", gname);
             }
         }
-        if prog.globals.iter().any(|g| g.is_public) {
+        if prog.globals.iter().any(|g| g.is_public || g.is_extern()) {
             out.push('\n');
         }
 
         for func in &prog.functions {
             let ret = self.resolve_return_type_c_name(func);
+            let mod_path = if func.has_no_mangle() {
+                ModulePath::new()
+            } else {
+                module.path.clone()
+            };
             let fname = if func.name == "main" {
                 "main".to_string()
             } else {
-                mangle_name(&module.path, &func.name)
+                mangle_name(&mod_path, &func.name)
             };
             let params = self.format_function_params_with_module(&func.params, &module.path);
-            writeln!(out, "{} {}({});", ret, fname, params).unwrap();
+            let extern_prefix = if func.is_extern() { "extern " } else { "" };
+            let _ = writeln!(out, "{extern_prefix}{} {}({});", ret, fname, params);
         }
 
         out.push('\n');
-        writeln!(out, "#endif /* {} */", guard).unwrap();
+        let _ = writeln!(out, "#endif /* {} */", guard);
         out
     }
 
@@ -247,22 +258,22 @@ impl Compiler {
     fn generate_module_c_code_from_program(&self, prog: &Program, module: &Module) -> String {
         let mut out = String::new();
         let header = format!("{}.h", module.path.join("_"));
-        writeln!(out, "#include \"{}\"", header).unwrap();
+        let _ = writeln!(out, "#include \"{}\"", header);
 
         for import in &module.imports {
             if self.registry.contains(&import.path) {
                 let dep = format!("{}.h", import.path.join("_"));
-                writeln!(out, "#include \"{}\"", dep).unwrap();
+                let _ = writeln!(out, "#include \"{}\"", dep);
             }
         }
         for inc in &module.includes {
-            writeln!(out, "#include \"{}\"", inc.path).unwrap();
+            let _ = writeln!(out, "#include \"{}\"", inc.path);
         }
         out.push('\n');
 
         let (seen_headers, _) = collect_type_headers_and_decls(&self.inferencer, prog);
         for hdr in &seen_headers {
-            writeln!(out, "#include {hdr}").unwrap();
+            let _ = writeln!(out, "#include {hdr}");
         }
         if !seen_headers.is_empty() {
             out.push('\n');

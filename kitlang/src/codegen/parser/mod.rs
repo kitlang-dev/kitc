@@ -5,7 +5,7 @@ use pest::iterators::Pair;
 use crate::error::CompilationError;
 use crate::{Rule, parse_error};
 
-use super::ast::{Block, Function, GlobalDecl, Include, Param, Stmt};
+use super::ast::{Block, Function, GlobalDecl, Include, MetaArg, Metadata, Param, Stmt};
 use super::module::{ImportType, ModuleImport, ModulePath};
 use super::type_ast::{
     EnumDefinition, EnumVariant, Field, ImplDefinition, RuleDecl, RuleSet, StructDefinition,
@@ -86,19 +86,69 @@ impl Parser {
         ModuleImport::with_span(path, import_type, (start, end))
     }
 
+    /// Parse a `metadata_and_modifiers` pair into (metadata list, is_public).
+    fn parse_metadata_and_modifiers(pair: Option<Pair<'_, Rule>>) -> (Vec<Metadata>, bool) {
+        let Some(p) = pair else {
+            return (vec![], true);
+        };
+        let mut metadata = Vec::new();
+        let mut is_public = true;
+        for child in p.into_inner() {
+            match child.as_rule() {
+                Rule::metadata => {
+                    if let Ok(m) = Self::parse_metadata(child) {
+                        metadata.push(m);
+                    }
+                }
+                Rule::modifier if child.as_str() == "private" => {
+                    is_public = false;
+                }
+                _ => {}
+            }
+        }
+        (metadata, is_public)
+    }
+
+    /// Parse a single `metadata` pair into a `Metadata`.
+    fn parse_metadata(pair: Pair<'_, Rule>) -> CompileResult<Metadata> {
+        let mut inner = pair.into_inner();
+        let name = Self::pair_text(inner.next().ok_or_else(|| {
+            CompilationError::ParseError("metadata missing identifier".to_string())
+        })?);
+        let mut args = Vec::new();
+        for child in inner {
+            let text = Self::pair_text(child);
+            // Simple heuristic: quoted strings are literals, unquoted are identifiers
+            if text.starts_with('"') && text.ends_with('"') {
+                let val = &text[1..text.len() - 1];
+                args.push(MetaArg::Literal(super::ast::Literal::String(
+                    val.to_string(),
+                )));
+            } else if let Ok(n) = text.parse::<i64>() {
+                args.push(MetaArg::Literal(super::ast::Literal::Int(n)));
+            } else if text == "true" {
+                args.push(MetaArg::Literal(super::ast::Literal::Bool(true)));
+            } else if text == "false" {
+                args.push(MetaArg::Literal(super::ast::Literal::Bool(false)));
+            } else if text == "null" {
+                args.push(MetaArg::Literal(super::ast::Literal::Null));
+            } else {
+                args.push(MetaArg::Identifier(text));
+            }
+        }
+        Ok(Metadata { name, args })
+    }
+
     /// Parse a `function_decl` rule into a `Function`.
     pub fn parse_function(&self, pair: Pair<Rule>) -> CompileResult<Function> {
         let mut inner = pair.into_inner();
 
-        // Extract is_public from metadata_and_modifiers, if present
-        let is_public = match inner.peek() {
+        // Parse metadata_and_modifiers, if present
+        let (metadata, is_public) = match inner.peek() {
             Some(p) if p.as_rule() == Rule::metadata_and_modifiers => {
-                let modifiers = inner.next().unwrap(); // safe: peeked above
-                !modifiers
-                    .into_inner()
-                    .any(|c| c.as_rule() == Rule::modifier && c.as_str() == "private")
+                Self::parse_metadata_and_modifiers(inner.next())
             }
-            _ => true,
+            _ => (vec![], true),
         };
 
         // Function name is always next
@@ -127,6 +177,7 @@ impl Parser {
             inferred_return: None,
             body,
             is_public,
+            metadata,
         })
     }
 
@@ -498,6 +549,16 @@ impl Parser {
 
     /// Parse a top-level `var_decl` rule into a `GlobalDecl`.
     pub fn parse_global_var_decl(&self, pair: Pair<Rule>) -> CompileResult<GlobalDecl> {
+        // Extract metadata_and_modifiers, if present
+        let metadata = match pair
+            .clone()
+            .into_inner()
+            .find(|p| p.as_rule() == Rule::metadata_and_modifiers)
+        {
+            Some(mm) => Self::parse_metadata_and_modifiers(Some(mm)).0,
+            None => vec![],
+        };
+
         // Parse a global variable or constant declaration at module level
         let name = Self::extract_first_identifier(pair.clone())
             .ok_or(parse_error!("global var_decl missing identifier"))?;
@@ -521,6 +582,7 @@ impl Parser {
             init,
             is_const,
             is_public: true,
+            metadata,
         })
     }
 

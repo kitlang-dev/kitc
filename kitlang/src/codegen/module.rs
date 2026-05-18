@@ -497,9 +497,8 @@ impl ModuleRegistry {
 
     /// Register a module and its declarations into the registry.
     /// Modules are looked up by path; duplicate paths are overwritten.
-    /// Register a module and its declarations into the registry.
     /// Panics in debug builds if a module with the same path is already registered.
-    pub fn register(&mut self, module: Module) {
+    pub fn register(&mut self, module: Module) -> CompileResult<()> {
         let path = module.path.clone();
         let source_path = module.source_path.clone();
         debug_assert!(
@@ -509,9 +508,10 @@ impl ModuleRegistry {
         );
         self.graph
             .add_node(ModuleNode::new(path.clone(), source_path));
-        self.register_module_declarations(&module);
-        let _ = self.register_module_binding(&module);
+        self.register_module_declarations(&module)?;
+        self.register_module_binding(&module)?;
         self.modules.insert(path, module);
+        Ok(())
     }
 
     /// Register a single declaration name in the global declaration table.
@@ -526,7 +526,7 @@ impl ModuleRegistry {
             });
     }
 
-    fn register_module_declarations(&mut self, module: &Module) {
+    fn register_module_declarations(&mut self, module: &Module) -> CompileResult<()> {
         let p = &module.path;
         macro_rules! reg {
             ($field:ident, $kind:ident) => {
@@ -541,6 +541,19 @@ impl ModuleRegistry {
         reg!(enums, Enum);
         reg!(traits, Trait);
         reg!(rulesets, RuleSet);
+
+        // Register extern-visible names to prevent duplicates across modules
+        for func in &module.program.functions {
+            if func.has_no_mangle() {
+                self.register_extern_name(&func.name)?;
+            }
+        }
+        for global in &module.program.globals {
+            if global.has_no_mangle() {
+                self.register_extern_name(&global.name)?;
+            }
+        }
+        Ok(())
     }
 
     fn register_module_binding(&mut self, module: &Module) -> CompileResult<()> {
@@ -596,6 +609,13 @@ impl ModuleRegistry {
     /// Register an extern-visible name in the binding table to prevent duplicates.
     pub fn register_extern_name(&mut self, name: &str) -> Result<(), CompilationError> {
         let extern_key = format!("extern.{}", name);
+        // Reject duplicates even if the existing binding is also Extern.
+        if self.bindings.contains(&extern_key) {
+            return Err(CompilationError::DuplicateSymbol {
+                name: name.to_string(),
+                module: "extern".to_string(),
+            });
+        }
         self.bindings.insert(extern_key, NameBinding::Extern)
     }
 

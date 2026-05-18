@@ -120,6 +120,7 @@ fn test_declaration_registration() {
         init: None,
         is_const: false,
         is_public: true,
+        metadata: vec![],
     }];
     program.functions = vec![Function {
         name: "my_func".to_string(),
@@ -128,6 +129,7 @@ fn test_declaration_registration() {
         inferred_return: None,
         body: Block { stmts: vec![] },
         is_public: true,
+        metadata: vec![],
     }];
 
     let module = Module::new(
@@ -137,7 +139,7 @@ fn test_declaration_registration() {
         vec![],
         program,
     );
-    registry.register(module);
+    registry.register(module).unwrap();
 
     assert_eq!(
         registry.find_module_for_declaration("my_func", &ModulePath::new()),
@@ -175,14 +177,17 @@ fn test_resolve_qualified_name_simple() {
         inferred_return: None,
         body: Block { stmts: vec![] },
         is_public: true,
+        metadata: vec![],
     }];
-    registry.register(Module::new(
-        mod_path.clone(),
-        PathBuf::from("math.kit"),
-        vec![],
-        vec![],
-        program,
-    ));
+    registry
+        .register(Module::new(
+            mod_path.clone(),
+            PathBuf::from("math.kit"),
+            vec![],
+            vec![],
+            program,
+        ))
+        .unwrap();
 
     let (found_mod, found_name) = registry
         .resolve_qualified_name("add", &ModulePath::new())
@@ -205,14 +210,17 @@ fn test_resolve_qualified_name_dotted() {
         inferred_return: None,
         body: Block { stmts: vec![] },
         is_public: true,
+        metadata: vec![],
     }];
-    registry.register(Module::new(
-        mod_path.clone(),
-        PathBuf::from("pkg/math.kit"),
-        vec![],
-        vec![],
-        program,
-    ));
+    registry
+        .register(Module::new(
+            mod_path.clone(),
+            PathBuf::from("pkg/math.kit"),
+            vec![],
+            vec![],
+            program,
+        ))
+        .unwrap();
 
     let (found_mod, found_name) = registry
         .resolve_qualified_name("pkg.math.add", &ModulePath::new())

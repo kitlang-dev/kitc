@@ -405,7 +405,7 @@ fn load_module_recursive(
         mod_using: usings,
     };
 
-    registry.register(module);
+    registry.register(module)?;
 
     // Recursively load imported modules, accumulating errors like Haskell's forMWithErrors.
     let mut errors: Vec<CompilationError> = Vec::new();

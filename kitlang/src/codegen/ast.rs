@@ -5,6 +5,37 @@ use super::type_ast::{
     EnumDefinition, FieldInit, ImplDefinition, RuleSet, StructDefinition, TraitDefinition, TypeDef,
 };
 
+/// Represents a metadata annotation (e.g., `#[extern]`, `#[inline]`, `#[meta(args)]`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Metadata {
+    pub name: String,
+    pub args: Vec<MetaArg>,
+}
+
+impl Metadata {
+    pub fn has_name(&self, name: &str) -> bool {
+        self.name == name
+    }
+}
+
+/// An argument to a metadata annotation.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MetaArg {
+    Identifier(String),
+    Literal(Literal),
+}
+
+/// Check if any metadata entry matches the given name.
+pub fn has_meta(metas: &[Metadata], name: &str) -> bool {
+    metas.iter().any(|m| m.has_name(name))
+}
+
+/// Returns `true` if the metadata list contains `#[extern]` or `#[expose]` —
+/// both of which suppress name mangling.
+pub fn has_no_mangle(metas: &[Metadata]) -> bool {
+    has_meta(metas, "extern") || has_meta(metas, "expose")
+}
+
 /// Represents a C header inclusion.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Include {
@@ -47,6 +78,20 @@ pub struct Function {
     pub body: Block,
     /// Whether this function is publicly visible to other modules.
     pub is_public: bool,
+    /// Metadata annotations (e.g., `#[extern]`, `#[expose]`, `#[inline]`).
+    pub metadata: Vec<Metadata>,
+}
+
+impl Function {
+    /// Returns `true` if this function has `#[extern]` or `#[expose]` metadata.
+    pub fn has_no_mangle(&self) -> bool {
+        has_no_mangle(&self.metadata)
+    }
+
+    /// Returns `true` if this function has `#[extern]` metadata.
+    pub fn is_extern(&self) -> bool {
+        has_meta(&self.metadata, "extern")
+    }
 }
 
 /// Represents a function parameter.
@@ -242,6 +287,20 @@ pub struct GlobalDecl {
     pub is_const: bool,
     /// Whether this global is publicly visible to other modules.
     pub is_public: bool,
+    /// Metadata annotations (e.g., `#[extern]`, `#[expose]`).
+    pub metadata: Vec<Metadata>,
+}
+
+impl GlobalDecl {
+    /// Returns `true` if this global has `#[extern]` or `#[expose]` metadata.
+    pub fn has_no_mangle(&self) -> bool {
+        has_no_mangle(&self.metadata)
+    }
+
+    /// Returns `true` if this global has `#[extern]` metadata.
+    pub fn is_extern(&self) -> bool {
+        has_meta(&self.metadata, "extern")
+    }
 }
 
 impl Literal {
