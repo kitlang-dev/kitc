@@ -206,10 +206,7 @@ impl DependencyGraph {
     // - **Pruning**: repeated leaf removal ("prune") reveals the strongly connected core of a
     //   dependency graph.
     pub fn is_leaf_module(&self, path: &ModulePath) -> bool {
-        self.adjacency
-            .get(path)
-            .map(|deps| deps.is_empty())
-            .unwrap_or(true)
+        self.adjacency.get(path).is_some_and(|deps| deps.is_empty())
     }
 
     /// All modules that `path` directly depends on.

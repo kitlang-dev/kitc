@@ -51,81 +51,114 @@ impl Compiler {
         let all_simple = enum_def.variants.iter().all(|v| v.args.is_empty());
 
         if all_simple {
-            let variants: Vec<String> = enum_def
-                .variants
-                .iter()
-                .map(|v| {
-                    let mp = variant_module(v);
-                    format!("    {}", mangle_enum_variant(&mp, &enum_def.name, &v.name))
-                })
-                .collect();
-
-            let _ = write!(
-                output,
-                "typedef enum {{\n{}\n}} {};\n\n",
-                variants.join(",\n"),
-                enum_type_name
-            );
+            self.write_simple_enum(&mut output, enum_def, &variant_module, &enum_type_name);
         } else {
-            let disc: Vec<String> = enum_def
-                .variants
+            self.write_complex_enum(&mut output, enum_def, &variant_module, &enum_type_name);
+            self.write_enum_constructors(&mut output, enum_def, &variant_module, &enum_type_name);
+        }
+
+        output
+    }
+
+    fn write_simple_enum(
+        &self,
+        output: &mut String,
+        enum_def: &EnumDefinition,
+        variant_module: &impl Fn(&EnumVariant) -> ModulePath,
+        enum_type_name: &str,
+    ) {
+        let variants: Vec<String> = enum_def
+            .variants
+            .iter()
+            .map(|v| {
+                let mp = variant_module(v);
+                format!("    {}", mangle_enum_variant(&mp, &enum_def.name, &v.name))
+            })
+            .collect();
+
+        let _ = write!(
+            *output,
+            "typedef enum {{\n{}\n}} {};\n\n",
+            variants.join(",\n"),
+            enum_type_name
+        );
+    }
+
+    fn write_complex_enum(
+        &self,
+        output: &mut String,
+        enum_def: &EnumDefinition,
+        variant_module: &impl Fn(&EnumVariant) -> ModulePath,
+        enum_type_name: &str,
+    ) {
+        let disc: Vec<String> = enum_def
+            .variants
+            .iter()
+            .map(|v| {
+                let mp = variant_module(v);
+                format!("    {}", mangle_enum_variant(&mp, &enum_def.name, &v.name))
+            })
+            .collect();
+
+        // HACK: this should use a raw string for good looks, but we'd lose indent
+        let _ = write!(
+            *output,
+            "typedef enum {{\n{}\n}} {}_Discriminant;\n\n",
+            disc.join(",\n"),
+            enum_type_name
+        );
+
+        for v in enum_def.variants.iter().filter(|v| !v.args.is_empty()) {
+            let fields: Vec<String> = v
+                .args
                 .iter()
-                .map(|v| {
-                    let mp = variant_module(v);
-                    format!("    {}", mangle_enum_variant(&mp, &enum_def.name, &v.name))
+                .map(|arg| {
+                    let ty = self.resolve_field_type(arg);
+                    format!("    {} {};", ty.to_c_repr().name, arg.name)
                 })
                 .collect();
             let _ = write!(
-                output,
-                "typedef enum {{\n{}\n}} {}_Discriminant;\n\n",
-                disc.join(",\n"),
-                enum_type_name
-            );
-
-            for v in enum_def.variants.iter().filter(|v| !v.args.is_empty()) {
-                let fields: Vec<String> = v
-                    .args
-                    .iter()
-                    .map(|arg| {
-                        let ty = self.resolve_field_type(arg);
-                        format!("    {} {};", ty.to_c_repr().name, arg.name)
-                    })
-                    .collect();
-                let _ = write!(
-                    output,
-                    "typedef struct {{\n{}\n}} {}_{}_data;\n\n",
-                    fields.join("\n"),
-                    enum_type_name,
-                    v.name
-                );
-            }
-
-            let union_fields: Vec<String> = enum_def
-                .variants
-                .iter()
-                .filter(|v| !v.args.is_empty())
-                .map(|v| {
-                    format!(
-                        "    {}_{}_data {};",
-                        enum_type_name,
-                        v.name,
-                        v.name.to_lowercase()
-                    )
-                })
-                .collect();
-
-            let body = format!(
-                "    {}_Discriminant _discriminant;\n    union {{\n{}\n    }} _variant;",
+                *output,
+                "typedef struct {{\n{}\n}} {}_{}_data;\n\n",
+                fields.join("\n"),
                 enum_type_name,
-                union_fields.join("\n")
-            );
-            let _ = write!(
-                output,
-                "typedef struct {{\n{}\n}} {};\n\n",
-                body, enum_type_name
+                v.name
             );
         }
 
+        let union_fields: Vec<String> = enum_def
+            .variants
+            .iter()
+            .filter(|v| !v.args.is_empty())
+            .map(|v| {
+                format!(
+                    "    {}_{}_data {};",
+                    enum_type_name,
+                    v.name,
+                    v.name.to_lowercase()
+                )
+            })
+            .collect();
+
+        let body = format!(
+            "    {}_Discriminant _discriminant;\n    union {{\n{}\n    }} _variant;",
+            enum_type_name,
+            union_fields.join("\n")
+        );
+        let _ = write!(
+            *output,
+            "typedef struct {{\n{}\n}} {};\n\n",
+            body, enum_type_name
+        );
+    }
+
+    fn write_enum_constructors(
+        &self,
+        output: &mut String,
+        enum_def: &EnumDefinition,
+        variant_module: &impl Fn(&EnumVariant) -> ModulePath,
+        enum_type_name: &str,
+    ) {
         for v in enum_def.variants.iter().filter(|v| !v.args.is_empty()) {
             let params: Vec<String> = v
                 .args
@@ -152,7 +185,7 @@ impl Compiler {
             let mp = variant_module(v);
             let ctor = mangle_enum_variant(&mp, &enum_def.name, &v.name);
             let _ = write!(
-                output,
+                *output,
                 "{} {}_new({}) {{\n    {} result;\n    result._discriminant = {};\n{}\n    return result;\n}}\n\n",
                 enum_type_name,
                 ctor,
@@ -162,7 +195,5 @@ impl Compiler {
                 assigns.join("\n")
             );
         }
-
-        output
     }
 }

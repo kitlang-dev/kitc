@@ -42,9 +42,11 @@ impl Parser {
     }
 
     /// Parse an `include` rule into an `Include`.
-    pub fn parse_include(&self, pair: Pair<Rule>) -> Include {
+    pub fn parse_include(&self, pair: Pair<Rule>) -> CompileResult<Include> {
         let mut inner = pair.into_inner();
-        let path_literal_pair = inner.next().unwrap();
+        let path_literal_pair = inner
+            .next()
+            .ok_or_else(|| parse_error!("include statement missing path"))?;
         let path_str = path_literal_pair.as_str();
         let path = path_str[1..path_str.len() - 1].to_string();
 
@@ -54,19 +56,21 @@ impl Parser {
         });
 
         match linked_lib {
-            Some(lib) => Include::with_lib(path, lib),
-            None => Include::new(path),
+            Some(lib) => Ok(Include::with_lib(path, lib)),
+            None => Ok(Include::new(path)),
         }
     }
 
     /// Parse an `import` rule into a `ModuleImport`, detecting single/wildcard/double-wildcard.
-    pub fn parse_import(&self, pair: Pair<Rule>) -> ModuleImport {
+    pub fn parse_import(&self, pair: Pair<Rule>) -> CompileResult<ModuleImport> {
         let span = pair.as_span();
         let start = span.start();
         let end = span.end();
 
         let mut inner = pair.into_inner();
-        let import_path_pair = inner.next().unwrap();
+        let import_path_pair = inner
+            .next()
+            .ok_or_else(|| parse_error!("import statement missing path"))?;
         let full_path_str = import_path_pair.as_str();
 
         let has_wildcard = full_path_str.ends_with(".*");
@@ -83,7 +87,7 @@ impl Parser {
         };
 
         let path = ModulePath(path_str.split('.').map(String::from).collect());
-        ModuleImport::with_span(path, import_type, (start, end))
+        Ok(ModuleImport::with_span(path, import_type, (start, end)))
     }
 
     /// Parse a `metadata_and_modifiers` pair into (metadata list, is_public).
@@ -359,7 +363,9 @@ impl Parser {
                 .ok_or(parse_error!("trait impl missing trait type"))?,
         )?;
         // Skip type_params
-        while inner.peek().is_some() && inner.peek().unwrap().as_rule() == Rule::type_params {
+        while let Some(peek) = inner.peek()
+            && peek.as_rule() == Rule::type_params
+        {
             let _ = inner.next();
         }
         // Skip "for" keyword - not a named rule, consumed implicitly
@@ -406,8 +412,14 @@ impl Parser {
     pub fn parse_typedef(self, pair: Pair<Rule>) -> CompileResult<TypeDef> {
         let mut inner = pair.into_inner();
         // typedef_stmt = { "typedef" ~ identifier ~ "=" ~ type_annotation ~ ";" }
-        let name = Self::pair_text(inner.next().unwrap());
-        let type_pair = inner.next().unwrap();
+        let name = Self::pair_text(
+            inner
+                .next()
+                .ok_or_else(|| parse_error!("typedef missing name"))?,
+        );
+        let type_pair = inner
+            .next()
+            .ok_or_else(|| parse_error!("typedef missing type"))?;
         let type_def = self.parse_type(type_pair)?;
         Ok(TypeDef { name, type_def })
     }
@@ -471,9 +483,14 @@ impl Parser {
             .filter(|p: &Pair<Rule>| p.as_rule() == Rule::param)
             .map(|p: Pair<Rule>| {
                 let mut inner = p.into_inner();
-                // SAFETY: Grammar guarantees param has identifier and type
-                let name = Self::pair_text(inner.next().unwrap());
-                let type_node = inner.next().unwrap();
+                let name = Self::pair_text(
+                    inner
+                        .next()
+                        .ok_or_else(|| parse_error!("param missing name"))?,
+                );
+                let type_node = inner
+                    .next()
+                    .ok_or_else(|| parse_error!("param missing type"))?;
                 let ty_ann = self.parse_type(type_node)?;
                 Ok(Param {
                     name,
@@ -513,8 +530,10 @@ impl Parser {
             // grammar gives us a wrapper Rule::statement
             .filter(|p: &Pair<Rule>| p.as_rule() == Rule::statement)
             .map(|stmt_pair: Pair<Rule>| {
-                // SAFETY: Grammar guarantees exactly one child in statement wrapper
-                let inner = stmt_pair.into_inner().next().unwrap();
+                let inner = stmt_pair
+                    .into_inner()
+                    .next()
+                    .ok_or_else(|| parse_error!("statement wrapper is empty"))?;
                 match inner.as_rule() {
                     Rule::var_decl => self.parse_var_decl(&inner),
                     Rule::expr_stmt => self.parse_expr_stmt(inner),
@@ -529,7 +548,7 @@ impl Parser {
                     ))),
                 }
             })
-            .collect::<Result<_, _>>()?; // Collect and propagate errors
+            .collect::<Result<_, _>>()?;
         Ok(Block { stmts })
     }
 
@@ -594,17 +613,25 @@ impl Parser {
     }
 
     fn parse_type(self, pair: Pair<Rule>) -> CompileResult<Type> {
-        let inner_rule = pair.into_inner().next().unwrap(); // Get the actual type rule (base_type, pointer_type, etc.)
+        let inner_rule = pair
+            .into_inner()
+            .next()
+            .ok_or_else(|| parse_error!("type annotation is empty"))?;
         match inner_rule.as_rule() {
             Rule::base_type => {
                 let mut inner_base_type = inner_rule.into_inner();
-                let base_name = inner_base_type.next().unwrap().as_str().trim();
-                // For now, assume no complex array types directly from parsing this,
-                // and defer full array parsing if needed.
+                let base_name = inner_base_type
+                    .next()
+                    .ok_or_else(|| parse_error!("base type is empty"))?
+                    .as_str()
+                    .trim();
                 Ok(Type::from_kit(base_name))
             }
             Rule::pointer_type => {
-                let inner_ptr_type = inner_rule.into_inner().next().unwrap(); // Get the type being pointed to
+                let inner_ptr_type = inner_rule
+                    .into_inner()
+                    .next()
+                    .ok_or_else(|| parse_error!("pointer type is empty"))?;
                 let inner_ty = self.parse_type(inner_ptr_type)?;
                 Ok(Type::Ptr(Box::new(inner_ty)))
             }
@@ -618,8 +645,10 @@ impl Parser {
 
     fn parse_expr_stmt(self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         // expr_stmt = { expr ~ ";" }
-        // SAFETY: Grammar guarantees expression exists as first child
-        let expr_pair = pair.into_inner().next().unwrap();
+        let expr_pair = pair
+            .into_inner()
+            .next()
+            .ok_or_else(|| parse_error!("expression statement is empty"))?;
         Ok(Stmt::Expr(self.parse_expr(expr_pair)?))
     }
 
@@ -634,13 +663,24 @@ impl Parser {
         // if_stmt = { "if" ~ expr ~ block ~ else_part? }
         // else_part = { "else" ~ (block | if_stmt) }
         let mut inner = pair.into_inner();
-        let cond = self.parse_expr(inner.next().unwrap())?;
-        let then_branch = self.parse_block(inner.next().unwrap())?;
+        let cond = self.parse_expr(
+            inner
+                .next()
+                .ok_or_else(|| parse_error!("if statement missing condition"))?,
+        )?;
+        let then_branch = self.parse_block(
+            inner
+                .next()
+                .ok_or_else(|| parse_error!("if statement missing then branch"))?,
+        )?;
 
         let mut else_branch = None;
         if let Some(else_pair) = inner.next() {
             debug_assert_eq!(else_pair.as_rule(), Rule::else_part);
-            let else_content = else_pair.into_inner().next().unwrap();
+            let else_content = else_pair
+                .into_inner()
+                .next()
+                .ok_or_else(|| parse_error!("else part is empty"))?;
             let else_block = match else_content.as_rule() {
                 Rule::block => self.parse_block(else_content)?,
                 Rule::if_stmt => {
@@ -649,7 +689,10 @@ impl Parser {
                         stmts: vec![if_stmt],
                     }
                 }
-                _ => unreachable!(),
+                _ => unreachable!(
+                    "else_content rule should be block or if_stmt, got {:?}",
+                    else_content.as_rule()
+                ),
             };
             else_branch = Some(else_block);
         }
@@ -664,17 +707,37 @@ impl Parser {
     fn parse_while_stmt(self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         // while_stmt = { "while" ~ expr ~ block }
         let mut inner = pair.into_inner();
-        let cond = self.parse_expr(inner.next().unwrap())?;
-        let body = self.parse_block(inner.next().unwrap())?;
+        let cond = self.parse_expr(
+            inner
+                .next()
+                .ok_or_else(|| parse_error!("while statement missing condition"))?,
+        )?;
+        let body = self.parse_block(
+            inner
+                .next()
+                .ok_or_else(|| parse_error!("while statement missing body"))?,
+        )?;
         Ok(Stmt::While { cond, body })
     }
 
     fn parse_for_stmt(self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         // for_stmt = { "for" ~ identifier ~ "in" ~ expr ~ block }
         let mut inner = pair.into_inner();
-        let var = Self::pair_text(inner.next().unwrap());
-        let iter = self.parse_expr(inner.next().unwrap())?;
-        let body = self.parse_block(inner.next().unwrap())?;
+        let var = Self::pair_text(
+            inner
+                .next()
+                .ok_or_else(|| parse_error!("for statement missing variable"))?,
+        );
+        let iter = self.parse_expr(
+            inner
+                .next()
+                .ok_or_else(|| parse_error!("for statement missing iterable"))?,
+        )?;
+        let body = self.parse_block(
+            inner
+                .next()
+                .ok_or_else(|| parse_error!("for statement missing body"))?,
+        )?;
         Ok(Stmt::For { var, iter, body })
     }
 }

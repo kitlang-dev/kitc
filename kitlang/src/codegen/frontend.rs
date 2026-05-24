@@ -244,8 +244,8 @@ fn parse_kit_file(file: &Path) -> CompileResult<ParsedFile> {
 
     for pair in pairs {
         match pair.as_rule() {
-            Rule::include_stmt => includes.push(parser.parse_include(pair)),
-            Rule::import_stmt => imports.push(parser.parse_import(pair)),
+            Rule::include_stmt => includes.push(parser.parse_include(pair)?),
+            Rule::import_stmt => imports.push(parser.parse_import(pair)?),
             Rule::var_decl => globals.push(parser.parse_global_var_decl(&pair)?),
             Rule::function_decl => functions.push(parser.parse_function(pair)?),
             Rule::type_def => {
