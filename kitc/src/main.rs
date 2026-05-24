@@ -88,7 +88,7 @@ fn compile(
         vec![source.to_path_buf()],
         &exe_path,
         libs.to_vec(),
-        source_paths.to_vec(),
+        source_paths,
     );
 
     compiler

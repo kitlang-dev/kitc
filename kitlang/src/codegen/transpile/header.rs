@@ -215,8 +215,7 @@ impl Compiler {
                     Err(_) => global
                         .annotation
                         .as_ref()
-                        .map(|a| a.to_c_repr().name)
-                        .unwrap_or_else(|| "int".to_string()),
+                        .map_or_else(|| "int".to_string(), |a| a.to_c_repr().name),
                 };
                 let mod_path = global.mangling_module(&module.path);
                 let gname = mangle_name(&mod_path, &global.name);

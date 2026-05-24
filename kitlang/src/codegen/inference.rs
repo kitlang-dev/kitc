@@ -38,8 +38,8 @@ impl TypeInferencer {
 
     /// Infer types for an entire program
     pub fn infer_program(&mut self, prog: &mut Program) -> CompileResult<()> {
-        self.register_enum_types(&prog.enums)?;
-        self.register_struct_types(&prog.structs)?;
+        self.register_enum_types(&prog.enums);
+        self.register_struct_types(&prog.structs);
 
         // Infer global variable types first (before functions)
         self.infer_globals(&mut prog.globals)?;
@@ -80,18 +80,17 @@ impl TypeInferencer {
     }
 
     /// Register enum types in the type store and symbol table
-    fn register_enum_types(&mut self, enums: &[EnumDefinition]) -> CompileResult<()> {
+    fn register_enum_types(&mut self, enums: &[EnumDefinition]) {
         for enum_def in enums {
             self.symbols.define_enum(enum_def.clone());
             for variant in &enum_def.variants {
                 self.symbols.define_enum_variant(variant);
             }
         }
-        Ok(())
     }
 
     /// Register struct types in the type store and symbol table
-    fn register_struct_types(&mut self, structs: &[StructDefinition]) -> CompileResult<()> {
+    fn register_struct_types(&mut self, structs: &[StructDefinition]) {
         for struct_def in structs {
             // Build field type list and update field types
             let mut updated_fields = Vec::new();
@@ -131,7 +130,6 @@ impl TypeInferencer {
             // Register updated struct in symbol table for field lookups
             self.symbols.define_struct(updated_struct_def);
         }
-        Ok(())
     }
 
     /// Infer types for a function definition
@@ -364,18 +362,18 @@ impl TypeInferencer {
                 let enum_def = self.symbols.lookup_enum(&variant_info.enum_name).cloned();
 
                 let mut resolved_args = if let Some(ref ed) = enum_def {
-                    self.resolve_default_args(variant_info, ed, &args_clone)?
+                    Self::resolve_default_args(variant_info, ed, &args_clone)?
                 } else {
                     args_clone
                 };
 
-                *args = resolved_args.clone();
+                args.clone_from(&resolved_args);
 
                 let enum_ty = self
                     .store
                     .new_known(Type::Named(variant_info.enum_name.clone()));
 
-                for arg in resolved_args.iter_mut() {
+                for arg in &mut resolved_args {
                     self.infer_expr(arg)?;
                 }
 
@@ -760,7 +758,7 @@ impl TypeInferencer {
                 };
 
                 // Resolve default arguments (following Haskell compiler approach)
-                let resolved_args = self.resolve_default_args(&variant_info, &enum_def, args)?;
+                let resolved_args = Self::resolve_default_args(&variant_info, &enum_def, args)?;
 
                 // Update the args in the expression with resolved defaults
                 *args = resolved_args;
@@ -796,7 +794,6 @@ impl TypeInferencer {
     /// Returns a new Vec with default values filled in.
     /// Follows the Haskell compiler's `addDefaultArgs` function.
     fn resolve_default_args(
-        &self,
         variant_info: &EnumVariantInfo,
         enum_def: &EnumDefinition,
         provided_args: &[Expr],

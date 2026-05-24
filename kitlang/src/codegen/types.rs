@@ -68,7 +68,9 @@ impl TypeStore {
 
     /// Create a new unknown type (type variable) for inference.
     pub fn new_unknown(&mut self) -> TypeId {
-        let var_id = TypeVarId(self.type_vars.len() as u32);
+        let var_id = TypeVarId(
+            u32::try_from(self.type_vars.len()).expect("type_vars.len() exceeds u32::MAX"),
+        );
         self.type_vars.push(TypeVar { binding: None });
         let id = TypeId(self.next_id);
         self.next_id += 1;

@@ -15,6 +15,16 @@ use crate::codegen::types::{ToCRepr, Type, TypeId};
 use super::ast::Param;
 use super::inference::TypeInferencer;
 
+/// Check if a declaration in the given module field is marked #[extern] or #[expose].
+macro_rules! has_no_mangle_in_module {
+    ($registry:expr, $mod_path:expr, $name:expr, $field:ident) => {
+        $registry
+            .get($mod_path)
+            .and_then(|m| m.program.$field.iter().find(|item| item.name == $name))
+            .is_some_and(|item| item.has_no_mangle())
+    };
+}
+
 /// Walk all types referenced in a program and invoke `f` for each one.
 fn visit_program_types(inferencer: &TypeInferencer, prog: &Program, mut f: impl FnMut(&Type)) {
     for s in &prog.structs {
@@ -255,22 +265,6 @@ impl Compiler {
             .map(|m| m.path.clone())
     }
 
-    /// Check if a function is marked #[extern] or #[expose] in its defining module.
-    fn has_no_mangle_function(&self, mod_path: &ModulePath, name: &str) -> bool {
-        self.registry
-            .get(mod_path)
-            .and_then(|m| m.program.functions.iter().find(|f| f.name == name))
-            .is_some_and(|f| f.has_no_mangle())
-    }
-
-    /// Check if a global is marked #[extern] or #[expose] in its defining module.
-    fn has_no_mangle_global(&self, mod_path: &ModulePath, name: &str) -> bool {
-        self.registry
-            .get(mod_path)
-            .and_then(|m| m.program.globals.iter().find(|g| g.name == name))
-            .is_some_and(|g| g.has_no_mangle())
-    }
-
     /// Remove intermediate `.c` and `.h` files from the build directory.
     pub(crate) fn cleanup_intermediate_files(&self, module_c_files: &[PathBuf]) {
         if env::var("KEEP_C").is_ok() {
@@ -332,30 +326,17 @@ impl Compiler {
             .join(", ")
     }
 
-    fn format_function_param_type(&self, p: &Param) -> String {
-        self.inferencer
-            .store
-            .resolve(p.ty)
-            .map(|t| self.type_to_c_name(&t))
-            .or_else(|_| p.annotation.as_ref().map(|t| t.to_c_repr().name).ok_or(()))
-            .unwrap_or_else(|_| "void*".to_string())
-    }
-
     fn format_function_param_type_with_module(&self, p: &Param, module: &ModulePath) -> String {
         self.inferencer
             .store
             .resolve(p.ty)
             .map(|t| self.type_to_c_name_with_module(&t, module))
             .or_else(|_| p.annotation.as_ref().map(|t| t.to_c_repr().name).ok_or(()))
-            .unwrap_or_else(|_| "void*".to_string())
+            .unwrap_or_else(|()| "void*".to_string())
     }
 
     fn format_function_params(&self, params: &[Param]) -> String {
-        params
-            .iter()
-            .map(|p| format!("{} {}", self.format_function_param_type(p), p.name))
-            .collect::<Vec<_>>()
-            .join(", ")
+        self.format_function_params_with_module(params, &self.current_module)
     }
 
     fn format_function_params_with_module(&self, params: &[Param], module: &ModulePath) -> String {
@@ -377,8 +358,7 @@ impl Compiler {
             .inferencer
             .symbols()
             .lookup_enum(enum_name)
-            .map(|e| e.variants.iter().all(|v| v.args.is_empty()))
-            .unwrap_or(false);
+            .is_some_and(|e| e.variants.iter().all(|v| v.args.is_empty()));
         if is_simple {
             mangle_enum_variant(&self.current_module, enum_name, variant_name)
         } else {
@@ -394,7 +374,7 @@ impl Compiler {
         match expr {
             Expr::Identifier { name, .. } => {
                 if let Some(mod_path) = self.find_global_module(name) {
-                    if self.has_no_mangle_global(&mod_path, name) {
+                    if has_no_mangle_in_module!(self.registry, &mod_path, name.as_str(), globals) {
                         name.clone()
                     } else {
                         mangle_name(&mod_path, name)
@@ -422,17 +402,22 @@ impl Compiler {
                     );
                     format!("{}_new({})", ctor, a)
                 } else {
-                    let (mod_path, base_name) = match self.resolve_function_name(callee) {
-                        Some((mp, bn)) => (Some(mp), bn),
-                        None => {
+                    let (mod_path, base_name) =
+                        if let Some((mp, bn)) = self.resolve_function_name(callee) {
+                            (Some(mp), bn)
+                        } else {
                             let last = callee.rsplit('.').next().unwrap_or(callee);
                             (None, last.to_string())
-                        }
-                    };
+                        };
                     let mangled = if callee == "main" {
                         callee.clone()
                     } else if let Some(mp) = mod_path {
-                        if self.has_no_mangle_function(&mp, &base_name) {
+                        if has_no_mangle_in_module!(
+                            self.registry,
+                            &mp,
+                            base_name.as_str(),
+                            functions
+                        ) {
                             base_name.clone()
                         } else {
                             mangle_name(&mp, &base_name)
@@ -487,7 +472,7 @@ impl Compiler {
                 fields,
             } => {
                 let name = match self.inferencer.store.resolve(*ty) {
-                    Ok(Type::Struct { name, .. }) | Ok(Type::Named(name)) => name,
+                    Ok(Type::Struct { name, .. } | Type::Named(name)) => name,
                     Ok(_) => "UNKNOWN_STRUCT".to_string(),
                     Err(e) => {
                         eprintln!("Warning: Failed to resolve struct type: {}", e);

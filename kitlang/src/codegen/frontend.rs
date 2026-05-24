@@ -116,7 +116,7 @@ fn collect_kit_files_in_dir_shallow(dir: &Path, base_path: &ModulePath) -> Vec<M
     WalkDir::new(&dir)
         .max_depth(1)
         .into_iter()
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .filter(|e| e.file_type().is_file())
         .filter(|e| e.path().extension().and_then(|e| e.to_str()) == Some("kit"))
         .filter_map(|e| {
@@ -137,7 +137,7 @@ fn walk_kit_files(dir: &Path, base_path: &ModulePath, results: &mut Vec<ModulePa
     let Ok(dir) = dir.canonicalize() else {
         return;
     };
-    for entry in WalkDir::new(&dir).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(&dir).into_iter().filter_map(Result::ok) {
         let entry_path = entry.path();
         if !entry.file_type().is_file() {
             continue;
@@ -174,11 +174,11 @@ fn walk_kit_files(dir: &Path, base_path: &ModulePath, results: &mut Vec<ModulePa
 /// `DoubleWildcard` (`.**`) returns all `.kit` files recursively.
 fn resolve_wildcard_import(
     path: &ModulePath,
-    import_type: &ImportType,
+    import_type: ImportType,
     source_paths: &[(PathBuf, ModulePath)],
-) -> CompileResult<Vec<ModulePath>> {
+) -> Vec<ModulePath> {
     match import_type {
-        ImportType::Single => Ok(vec![path.clone()]),
+        ImportType::Single => vec![path.clone()],
         ImportType::Wildcard => {
             let mut results = Vec::new();
             for (dir, prefix) in source_paths {
@@ -192,7 +192,7 @@ fn resolve_wildcard_import(
                 results.extend(collect_kit_files_in_dir_shallow(&dir_path, path));
             }
             results.sort_by_key(|a| a.join("."));
-            Ok(results)
+            results
         }
         ImportType::DoubleWildcard => {
             let mut results = Vec::new();
@@ -204,7 +204,7 @@ fn resolve_wildcard_import(
                 walk_kit_files(&dir_path, path, &mut results);
             }
             results.sort_by_key(|a| a.join("."));
-            Ok(results)
+            results
         }
     }
 }
@@ -246,7 +246,7 @@ fn parse_kit_file(file: &Path) -> CompileResult<ParsedFile> {
         match pair.as_rule() {
             Rule::include_stmt => includes.push(parser.parse_include(pair)),
             Rule::import_stmt => imports.push(parser.parse_import(pair)),
-            Rule::var_decl => globals.push(parser.parse_global_var_decl(pair)?),
+            Rule::var_decl => globals.push(parser.parse_global_var_decl(&pair)?),
             Rule::function_decl => functions.push(parser.parse_function(pair)?),
             Rule::type_def => {
                 let mut inner = pair.into_inner();
@@ -254,7 +254,11 @@ fn parse_kit_file(file: &Path) -> CompileResult<ParsedFile> {
                 for child in inner {
                     match child.as_rule() {
                         Rule::enum_def => {
-                            enums.push(parser.parse_enum_def(child, metadata.clone(), is_public)?)
+                            enums.push(parser.parse_enum_def(
+                                child,
+                                metadata.clone(),
+                                is_public,
+                            )?);
                         }
                         Rule::struct_def => structs.push(parser.parse_struct_def(
                             child,
@@ -306,7 +310,7 @@ fn parse_kit_file(file: &Path) -> CompileResult<ParsedFile> {
 fn resolve_preludes(
     module_path: &ModulePath,
     source_paths: &[(PathBuf, ModulePath)],
-) -> CompileResult<Vec<ModuleImport>> {
+) -> Vec<ModuleImport> {
     let mut preludes = Vec::new();
     let mut prefix = ModulePath::new();
     let components = module_path.as_slice();
@@ -332,7 +336,7 @@ fn resolve_preludes(
     // Filter to only those that exist
     preludes.retain(|import| find_module_file(&import.path, source_paths).is_some());
 
-    Ok(preludes)
+    preludes
 }
 
 /// Load a module and all its dependencies recursively into the registry.
@@ -374,10 +378,10 @@ fn load_module_recursive(
 
     // Load preludes first (following Haskell compiler convention).
     // Skip prelude resolution if the module itself is named "prelude" to avoid infinite recursion.
-    let prelude_imports = if module_path.as_slice().last().map(|s| s.as_str()) == Some("prelude") {
+    let prelude_imports = if module_path.as_slice().last().map(String::as_str) == Some("prelude") {
         Vec::new()
     } else {
-        resolve_preludes(&module_path, source_paths)?
+        resolve_preludes(&module_path, source_paths)
     };
     for prelude in &prelude_imports {
         if !registry.contains(&prelude.path)
@@ -397,7 +401,7 @@ fn load_module_recursive(
             ImportType::Single => resolved_imports.push(import.clone()),
             ImportType::Wildcard | ImportType::DoubleWildcard => {
                 let concrete_paths =
-                    resolve_wildcard_import(&import.path, &import.import_type, source_paths)?;
+                    resolve_wildcard_import(&import.path, import.import_type, source_paths);
                 for concrete in concrete_paths {
                     resolved_imports.push(ModuleImport::new(concrete, ImportType::Single));
                 }
@@ -524,7 +528,7 @@ impl Compiler {
         files: Vec<PathBuf>,
         output: impl AsRef<Path>,
         libs: Vec<String>,
-        source_paths: Vec<String>,
+        source_paths: &[String],
     ) -> Self {
         let mut parsed_source_paths: Vec<(PathBuf, ModulePath)> = source_paths
             .iter()

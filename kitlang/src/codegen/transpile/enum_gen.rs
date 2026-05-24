@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use crate::codegen::ast::Attributed;
 use crate::codegen::frontend::Compiler;
 use crate::codegen::module::ModulePath;
@@ -11,7 +13,7 @@ impl Compiler {
             .store
             .resolve(field.ty)
             .ok()
-            .or(field.annotation.as_ref().cloned())
+            .or(field.annotation.clone())
             .unwrap_or(Type::Void)
     }
 
@@ -58,11 +60,12 @@ impl Compiler {
                 })
                 .collect();
 
-            output.push_str(&format!(
+            let _ = write!(
+                output,
                 "typedef enum {{\n{}\n}} {};\n\n",
                 variants.join(",\n"),
                 enum_type_name
-            ));
+            );
         } else {
             let disc: Vec<String> = enum_def
                 .variants
@@ -72,11 +75,12 @@ impl Compiler {
                     format!("    {}", mangle_enum_variant(&mp, &enum_def.name, &v.name))
                 })
                 .collect();
-            output.push_str(&format!(
+            let _ = write!(
+                output,
                 "typedef enum {{\n{}\n}} {}_Discriminant;\n\n",
                 disc.join(",\n"),
                 enum_type_name
-            ));
+            );
 
             for v in enum_def.variants.iter().filter(|v| !v.args.is_empty()) {
                 let fields: Vec<String> = v
@@ -87,12 +91,13 @@ impl Compiler {
                         format!("    {} {};", ty.to_c_repr().name, arg.name)
                     })
                     .collect();
-                output.push_str(&format!(
+                let _ = write!(
+                    output,
                     "typedef struct {{\n{}\n}} {}_{}_data;\n\n",
                     fields.join("\n"),
                     enum_type_name,
                     v.name
-                ));
+                );
             }
 
             let union_fields: Vec<String> = enum_def
@@ -114,19 +119,20 @@ impl Compiler {
                 enum_type_name,
                 union_fields.join("\n")
             );
-            output.push_str(&format!(
+            let _ = write!(
+                output,
                 "typedef struct {{\n{}\n}} {};\n\n",
                 body, enum_type_name
-            ));
+            );
         }
 
         for v in enum_def.variants.iter().filter(|v| !v.args.is_empty()) {
-                let params: Vec<String> = v
-                    .args
-                    .iter()
-                    .map(|arg| {
-                        let ty = self.resolve_field_type(arg);
-                        format!("{} {}", ty.to_c_repr().name, arg.name)
+            let params: Vec<String> = v
+                .args
+                .iter()
+                .map(|arg| {
+                    let ty = self.resolve_field_type(arg);
+                    format!("{} {}", ty.to_c_repr().name, arg.name)
                 })
                 .collect();
             let arg_names: Vec<String> = v.args.iter().map(|arg| arg.name.clone()).collect();
@@ -145,11 +151,16 @@ impl Compiler {
                 .collect();
             let mp = variant_module(v);
             let ctor = mangle_enum_variant(&mp, &enum_def.name, &v.name);
-            output.push_str(&format!(
+            let _ = write!(
+                output,
                 "{} {}_new({}) {{\n    {} result;\n    result._discriminant = {};\n{}\n    return result;\n}}\n\n",
-                enum_type_name, ctor, params.join(", "),
-                enum_type_name, ctor, assigns.join("\n")
-            ));
+                enum_type_name,
+                ctor,
+                params.join(", "),
+                enum_type_name,
+                ctor,
+                assigns.join("\n")
+            );
         }
 
         output

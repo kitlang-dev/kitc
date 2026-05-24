@@ -35,7 +35,7 @@ impl Parser {
     }
 
     /// Check if a var_decl uses the 'const' keyword
-    fn is_const_var_decl(pair: Pair<'_, Rule>) -> bool {
+    fn is_const_var_decl(pair: &Pair<'_, Rule>) -> bool {
         pair.clone()
             .into_inner()
             .any(|p| p.as_rule() == Rule::const_kw)
@@ -211,7 +211,7 @@ impl Parser {
         // Collect var_decl rules from the remaining children
         let fields: Vec<Field> = inner
             .filter(|p| p.as_rule() == Rule::var_decl)
-            .map(|p| self.parse_struct_field(p))
+            .map(|p| self.parse_struct_field(&p))
             .collect::<Result<_, _>>()?;
 
         if fields.is_empty() {
@@ -268,7 +268,7 @@ impl Parser {
     }
 
     fn parse_enum_variant(
-        &self,
+        self,
         pair: Pair<Rule>,
         parent_name: String,
     ) -> CompileResult<EnumVariant> {
@@ -436,12 +436,12 @@ impl Parser {
         }
     }
 
-    fn parse_struct_field(self, pair: Pair<Rule>) -> CompileResult<Field> {
+    fn parse_struct_field(self, pair: &Pair<Rule>) -> CompileResult<Field> {
         // var_decl = { (var_kw | const_kw) ~ identifier ~ (":" ~ type_annotation)? ~ ("=" ~ expr)? ~ ";" }
         let name = Self::extract_first_identifier(pair.clone())
             .ok_or(parse_error!("struct field missing name"))?;
 
-        let is_const = Self::is_const_var_decl(pair.clone());
+        let is_const = Self::is_const_var_decl(pair);
 
         let annotation = Self::extract_first_rule(pair.clone(), Rule::type_annotation)
             .map(|p| self.parse_type(p))
@@ -506,7 +506,7 @@ impl Parser {
         })
     }
 
-    fn parse_block(&self, pair: Pair<Rule>) -> CompileResult<Block> {
+    fn parse_block(self, pair: Pair<Rule>) -> CompileResult<Block> {
         // block = { "{" ~ (statement)* ~ "}" }
         let stmts = pair
             .into_inner()
@@ -516,7 +516,7 @@ impl Parser {
                 // SAFETY: Grammar guarantees exactly one child in statement wrapper
                 let inner = stmt_pair.into_inner().next().unwrap();
                 match inner.as_rule() {
-                    Rule::var_decl => self.parse_var_decl(inner),
+                    Rule::var_decl => self.parse_var_decl(&inner),
                     Rule::expr_stmt => self.parse_expr_stmt(inner),
                     Rule::return_stmt => self.parse_return(inner),
                     Rule::if_stmt => self.parse_if_stmt(inner),
@@ -533,7 +533,7 @@ impl Parser {
         Ok(Block { stmts })
     }
 
-    fn parse_var_decl(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+    fn parse_var_decl(self, pair: &Pair<Rule>) -> CompileResult<Stmt> {
         // var_decl = { (var_kw | const_kw) ~ identifier ~ (":" ~ type_annotation)? ~ ("=" ~ expr)? ~ ";" }
         // Note: const_kw is silently consumed (not used for var_decl statements in current implementation)
 
@@ -557,7 +557,7 @@ impl Parser {
     }
 
     /// Parse a top-level `var_decl` rule into a `GlobalDecl`.
-    pub fn parse_global_var_decl(&self, pair: Pair<Rule>) -> CompileResult<GlobalDecl> {
+    pub fn parse_global_var_decl(self, pair: &Pair<Rule>) -> CompileResult<GlobalDecl> {
         // Extract metadata_and_modifiers, if present
         let (metadata, is_public) = match pair
             .clone()
@@ -572,7 +572,7 @@ impl Parser {
         let name = Self::extract_first_identifier(pair.clone())
             .ok_or(parse_error!("global var_decl missing identifier"))?;
 
-        let is_const = Self::is_const_var_decl(pair.clone());
+        let is_const = Self::is_const_var_decl(pair);
 
         let annotation = Self::extract_first_rule(pair.clone(), Rule::type_annotation)
             .map(|p| self.parse_type(p))
@@ -593,7 +593,7 @@ impl Parser {
         })
     }
 
-    fn parse_type(&self, pair: Pair<Rule>) -> CompileResult<Type> {
+    fn parse_type(self, pair: Pair<Rule>) -> CompileResult<Type> {
         let inner_rule = pair.into_inner().next().unwrap(); // Get the actual type rule (base_type, pointer_type, etc.)
         match inner_rule.as_rule() {
             Rule::base_type => {
@@ -616,21 +616,21 @@ impl Parser {
         }
     }
 
-    fn parse_expr_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+    fn parse_expr_stmt(self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         // expr_stmt = { expr ~ ";" }
         // SAFETY: Grammar guarantees expression exists as first child
         let expr_pair = pair.into_inner().next().unwrap();
         Ok(Stmt::Expr(self.parse_expr(expr_pair)?))
     }
 
-    fn parse_return(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+    fn parse_return(self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         // return_stmt = { "return" ~ expr? ~ ";" }
         let mut inner = pair.into_inner();
         let expr = inner.next().map(|p| self.parse_expr(p)).transpose()?;
         Ok(Stmt::Return(expr))
     }
 
-    fn parse_if_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+    fn parse_if_stmt(self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         // if_stmt = { "if" ~ expr ~ block ~ else_part? }
         // else_part = { "else" ~ (block | if_stmt) }
         let mut inner = pair.into_inner();
@@ -661,7 +661,7 @@ impl Parser {
         })
     }
 
-    fn parse_while_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+    fn parse_while_stmt(self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         // while_stmt = { "while" ~ expr ~ block }
         let mut inner = pair.into_inner();
         let cond = self.parse_expr(inner.next().unwrap())?;
@@ -669,7 +669,7 @@ impl Parser {
         Ok(Stmt::While { cond, body })
     }
 
-    fn parse_for_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+    fn parse_for_stmt(self, pair: Pair<Rule>) -> CompileResult<Stmt> {
         // for_stmt = { "for" ~ identifier ~ "in" ~ expr ~ block }
         let mut inner = pair.into_inner();
         let var = Self::pair_text(inner.next().unwrap());

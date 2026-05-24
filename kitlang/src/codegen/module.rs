@@ -12,11 +12,13 @@ pub struct ModulePath(pub Vec<String>);
 
 impl ModulePath {
     /// Create a new empty module path.
+    #[must_use]
     pub fn new() -> Self {
         Self(Vec::new())
     }
 
     /// Create a module path from a slice of string parts.
+    #[must_use]
     pub fn from_parts(parts: &[&str]) -> Self {
         Self(parts.iter().map(|s| s.to_string()).collect())
     }
@@ -43,6 +45,7 @@ impl ModulePath {
 
     /// Return the parent path (all components except the last).
     /// Returns an empty path if there is only one or zero components.
+    #[must_use]
     pub fn parent(&self) -> Self {
         if self.0.len() <= 1 {
             Self::new()
@@ -545,30 +548,21 @@ impl ModuleRegistry {
         reg!(rulesets, RuleSet);
 
         // Register extern-visible names to prevent duplicates across modules
-        for func in &module.program.functions {
-            if func.has_no_mangle() {
-                self.register_extern_name(&func.name)?;
-            }
-        }
-        for global in &module.program.globals {
-            if global.has_no_mangle() {
-                self.register_extern_name(&global.name)?;
-            }
-        }
-        for struct_def in &module.program.structs {
-            if struct_def.has_no_mangle() {
-                self.register_extern_name(&struct_def.name)?;
-            }
-        }
-        for enum_def in &module.program.enums {
-            if enum_def.has_no_mangle() {
-                self.register_extern_name(&enum_def.name)?;
-            }
-            for variant in &enum_def.variants {
-                if variant.has_no_mangle() {
-                    self.register_extern_name(&variant.name)?;
+        macro_rules! reg_extern {
+            ($items:expr) => {
+                for item in $items {
+                    if item.has_no_mangle() {
+                        self.register_extern_name(&item.name)?;
+                    }
                 }
-            }
+            };
+        }
+        reg_extern!(&module.program.functions);
+        reg_extern!(&module.program.globals);
+        reg_extern!(&module.program.structs);
+        reg_extern!(&module.program.enums);
+        for enum_def in &module.program.enums {
+            reg_extern!(&enum_def.variants);
         }
         Ok(())
     }
