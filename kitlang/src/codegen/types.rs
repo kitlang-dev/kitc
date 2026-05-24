@@ -2,6 +2,7 @@ use crate::Rule;
 use crate::error::CompilationError;
 
 use pest::iterators::Pair;
+use strum::{EnumString, IntoStaticStr};
 
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -417,198 +418,133 @@ fn simple_c_type(name: &str, headers: &[&str]) -> CRepr {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, EnumString, IntoStaticStr)]
 pub enum BinaryOperator {
+    #[strum(serialize = "+")]
     Add,
+    #[strum(serialize = "-")]
     Sub,
+    #[strum(serialize = "*")]
     Mul,
+    #[strum(serialize = "/")]
     Div,
+    #[strum(serialize = "%")]
     Mod,
+    #[strum(serialize = "==")]
     Eq,
     /// Not equal
+    #[strum(serialize = "!=")]
     Ne,
     /// Less than
+    #[strum(serialize = "<")]
     Lt,
     /// Greater than
+    #[strum(serialize = ">")]
     Gt,
     /// Less than or equal
+    #[strum(serialize = "<=")]
     Le,
     /// Greater than or equal
+    #[strum(serialize = ">=")]
     Ge,
+    #[strum(serialize = "&&")]
     And,
+    #[strum(serialize = "||")]
     Or,
+    #[strum(serialize = "&")]
     BitAnd,
+    #[strum(serialize = "|")]
     BitOr,
+    #[strum(serialize = "^")]
     BitXor,
     /// Shift Left
+    #[strum(serialize = "<<")]
     Shl,
     /// Shift Right
+    #[strum(serialize = ">>")]
     Shr,
 }
 
 impl BinaryOperator {
     /// Return the C operator string for this binary operator.
     pub fn to_c_str(&self) -> &'static str {
-        match self {
-            BinaryOperator::Add => "+",
-            BinaryOperator::Sub => "-",
-            BinaryOperator::Mul => "*",
-            BinaryOperator::Div => "/",
-            BinaryOperator::Mod => "%",
-            BinaryOperator::Eq => "==",
-            BinaryOperator::Ne => "!=",
-            BinaryOperator::Lt => "<",
-            BinaryOperator::Gt => ">",
-            BinaryOperator::Le => "<=",
-            BinaryOperator::Ge => ">=",
-            BinaryOperator::And => "&&",
-            BinaryOperator::Or => "||",
-            BinaryOperator::BitAnd => "&",
-            BinaryOperator::BitOr => "|",
-            BinaryOperator::BitXor => "^",
-            BinaryOperator::Shl => "<<",
-            BinaryOperator::Shr => ">>",
-        }
+        (*self).into()
     }
 
     /// Construct a `BinaryOperator` from a Pest parse pair (matched on `Rule::*_op`).
     pub fn from_rule_pair(pair: &Pair<Rule>) -> Result<Self, CompilationError> {
-        match pair.as_rule() {
-            Rule::additive_op => match pair.as_str() {
-                "+" => Ok(BinaryOperator::Add),
-                "-" => Ok(BinaryOperator::Sub),
-                _ => Err(CompilationError::InvalidOperator(pair.as_str().to_string())),
-            },
-            Rule::multiplicative_op => match pair.as_str() {
-                "*" => Ok(BinaryOperator::Mul),
-                "/" => Ok(BinaryOperator::Div),
-                "%" => Ok(BinaryOperator::Mod),
-                _ => Err(CompilationError::InvalidOperator(pair.as_str().to_string())),
-            },
-            Rule::eq_op => match pair.as_str() {
-                "==" => Ok(BinaryOperator::Eq),
-                "!=" => Ok(BinaryOperator::Ne),
-                _ => Err(CompilationError::InvalidOperator(pair.as_str().to_string())),
-            },
-            Rule::comp_op => match pair.as_str() {
-                "<" => Ok(BinaryOperator::Lt),
-                ">" => Ok(BinaryOperator::Gt),
-                "<=" => Ok(BinaryOperator::Le),
-                ">=" => Ok(BinaryOperator::Ge),
-                _ => Err(CompilationError::InvalidOperator(pair.as_str().to_string())),
-            },
-            Rule::and_ops => Ok(BinaryOperator::And), // &&
-            Rule::logical_or_op => Ok(BinaryOperator::Or), // ||
-            Rule::bitwise_or_op => Ok(BinaryOperator::BitOr),
-            Rule::bitwise_xor_op => Ok(BinaryOperator::BitXor),
-            Rule::shift_op => match pair.as_str() {
-                "<<" => Ok(BinaryOperator::Shl),
-                ">>" => Ok(BinaryOperator::Shr),
-                _ => Err(CompilationError::InvalidOperator(pair.as_str().to_string())),
-            },
-            // Need to check specific logic for & vs && in grammar
-            _ => Err(CompilationError::InvalidOperator(format!(
-                "{:?}",
-                pair.as_rule()
-            ))),
-        }
+        Self::from_str(pair.as_str())
+            .map_err(|_| CompilationError::InvalidOperator(pair.as_str().to_string()))
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, EnumString, IntoStaticStr)]
 pub enum UnaryOperator {
+    #[strum(serialize = "-")]
     Neg,
+    #[strum(serialize = "!")]
     Not,
+    #[strum(serialize = "~")]
     BitNot,
+    #[strum(serialize = "&")]
     AddressOf,
+    #[strum(serialize = "*")]
     Dereference,
 }
 
 impl UnaryOperator {
     /// Return the C operator string for this unary operator.
     pub fn to_c_str(&self) -> &'static str {
-        match self {
-            UnaryOperator::Neg => "-",
-            UnaryOperator::Not => "!",
-            UnaryOperator::BitNot => "~",
-            UnaryOperator::AddressOf => "&",
-            UnaryOperator::Dereference => "*",
-        }
+        (*self).into()
     }
 }
 
-impl FromStr for UnaryOperator {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "-" => Ok(UnaryOperator::Neg),
-            "!" => Ok(UnaryOperator::Not),
-            "~" => Ok(UnaryOperator::BitNot),
-            // AddressOf is typically handled separately in parser due to grammar structure
-            _ => Err(()),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, EnumString, IntoStaticStr)]
 pub enum AssignmentOperator {
     /// Simple assignment
+    #[strum(serialize = "=")]
     Assign,
     /// Add assignment (+=)
+    #[strum(serialize = "+=")]
     AddAssign,
     /// Subtract assignment (-=)
+    #[strum(serialize = "-=")]
     SubAssign,
     /// Multiply assignment (*=)
+    #[strum(serialize = "*=")]
     MulAssign,
     /// Divide assignment (/=)
+    #[strum(serialize = "/=")]
     DivAssign,
     /// Modulo assignment (%=)
+    #[strum(serialize = "%=")]
     ModAssign,
     /// Bitwise and assignment (&=)
+    #[strum(serialize = "&=")]
     AndAssign,
     /// Bitwise or assignment (|=)
+    #[strum(serialize = "|=")]
     OrAssign,
     /// Bitwise xor assignment (^=)
+    #[strum(serialize = "^=")]
     XorAssign,
     /// Shift left assignment (<<=)
+    #[strum(serialize = "<<=")]
     ShlAssign,
     /// Shift right assignment (>>=)
+    #[strum(serialize = ">>=")]
     ShrAssign,
 }
 
 impl AssignmentOperator {
     /// Return the C operator string for this assignment operator.
     pub fn to_c_str(&self) -> &'static str {
-        match self {
-            AssignmentOperator::Assign => "=",
-            AssignmentOperator::AddAssign => "+=",
-            AssignmentOperator::SubAssign => "-=",
-            AssignmentOperator::MulAssign => "*=",
-            AssignmentOperator::DivAssign => "/=",
-            AssignmentOperator::ModAssign => "%=",
-            AssignmentOperator::AndAssign => "&=",
-            AssignmentOperator::OrAssign => "|=",
-            AssignmentOperator::XorAssign => "^=",
-            AssignmentOperator::ShlAssign => "<<=",
-            AssignmentOperator::ShrAssign => ">>=",
-        }
+        (*self).into()
     }
 
     /// Construct an `AssignmentOperator` from a Pest parse pair.
     pub fn from_rule_pair(pair: &Pair<Rule>) -> Result<Self, CompilationError> {
-        match pair.as_str() {
-            "=" => Ok(AssignmentOperator::Assign),
-            "+=" => Ok(AssignmentOperator::AddAssign),
-            "-=" => Ok(AssignmentOperator::SubAssign),
-            "*=" => Ok(AssignmentOperator::MulAssign),
-            "/=" => Ok(AssignmentOperator::DivAssign),
-            "%=" => Ok(AssignmentOperator::ModAssign),
-            "&=" => Ok(AssignmentOperator::AndAssign),
-            "|=" => Ok(AssignmentOperator::OrAssign),
-            "^=" => Ok(AssignmentOperator::XorAssign),
-            "<<=" => Ok(AssignmentOperator::ShlAssign),
-            ">>=" => Ok(AssignmentOperator::ShrAssign),
-            _ => Err(CompilationError::InvalidOperator(pair.as_str().to_string())),
-        }
+        Self::from_str(pair.as_str())
+            .map_err(|_| CompilationError::InvalidOperator(pair.as_str().to_string()))
     }
 }

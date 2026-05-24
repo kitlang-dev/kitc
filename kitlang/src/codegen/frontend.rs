@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::slice;
+use walkdir::WalkDir;
 
 use pest::Parser;
 
@@ -109,12 +110,38 @@ fn determine_module_path(file: &Path, source_paths: &[(PathBuf, ModulePath)]) ->
 }
 /// Collect all `.kit` file paths in a directory (non-recursive), excluding `prelude.kit`.
 fn collect_kit_files_in_dir_shallow(dir: &Path, base_path: &ModulePath) -> Vec<ModulePath> {
-    let Ok(entries) = fs::read_dir(dir) else {
+    let Ok(dir) = dir.canonicalize() else {
         return Vec::new();
     };
-    let mut results = Vec::new();
-    for entry in entries.flatten() {
+    WalkDir::new(&dir)
+        .max_depth(1)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| e.path().extension().and_then(|e| e.to_str()) == Some("kit"))
+        .filter_map(|e| {
+            let stem = e.path().file_stem()?;
+            let stem_str = stem.to_string_lossy();
+            if stem_str == "prelude" {
+                return None;
+            }
+            let mut mod_path = base_path.clone();
+            mod_path.push(stem_str.to_string());
+            Some(mod_path)
+        })
+        .collect()
+}
+
+/// Recursively walk a directory tree collecting `.kit` files, used for `**` double-wildcard imports.
+fn walk_kit_files(dir: &Path, base_path: &ModulePath, results: &mut Vec<ModulePath>) {
+    let Ok(dir) = dir.canonicalize() else {
+        return;
+    };
+    for entry in WalkDir::new(&dir).into_iter().filter_map(|e| e.ok()) {
         let entry_path = entry.path();
+        if !entry.file_type().is_file() {
+            continue;
+        }
         if entry_path.extension().and_then(|e| e.to_str()) != Some("kit") {
             continue;
         }
@@ -125,40 +152,18 @@ fn collect_kit_files_in_dir_shallow(dir: &Path, base_path: &ModulePath) -> Vec<M
         if stem_str == "prelude" {
             continue;
         }
+        let parent = entry_path.parent().unwrap_or(dir.as_path());
+        let rel = parent.strip_prefix(&dir).unwrap_or(Path::new(""));
         let mut mod_path = base_path.clone();
-        mod_path.push(stem_str.to_string());
-        results.push(mod_path);
-    }
-    results
-}
-
-/// Recursively walk a directory tree collecting `.kit` files, used for `**` double-wildcard imports.
-fn walk_kit_files(dir: &Path, base_path: &ModulePath, results: &mut Vec<ModulePath>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let entry_path = entry.path();
-        if entry_path.is_dir() {
-            if let Some(dir_name) = entry_path.file_name().and_then(|n| n.to_str()) {
-                let mut sub_path = base_path.clone();
-                sub_path.push(dir_name.to_string());
-                walk_kit_files(&entry_path, &sub_path, results);
-            }
-        } else if entry_path.extension().and_then(|e| e.to_str()) == Some("kit")
-            && let Some(stem) = entry_path.file_stem()
-        {
-            let stem_str = stem.to_string_lossy();
-            match stem_str.as_ref() {
-                "prelude" => {}
-                "_mod" => results.push(base_path.clone()),
-                name => {
-                    let mut mod_path = base_path.clone();
-                    mod_path.push(name.to_string());
-                    results.push(mod_path);
-                }
+        for component in rel.components() {
+            if let std::path::Component::Normal(c) = component {
+                mod_path.push(c.to_string_lossy().to_string());
             }
         }
+        if stem_str != "_mod" {
+            mod_path.push(stem_str.to_string());
+        }
+        results.push(mod_path);
     }
 }
 

@@ -49,7 +49,7 @@ impl Parser {
                     Rule::unary_op => {
                         let op_str = first_pair.as_str();
                         let op = UnaryOperator::from_str(op_str)
-                            .map_err(|()| parse_error!("invalid unary operation: {op_str}"))?;
+                            .map_err(|_| parse_error!("invalid unary operation: {op_str}"))?;
                         let expr = self.parse_expr(inner_pairs.next().unwrap())?;
                         Ok(Expr::UnaryOp {
                             op,
