@@ -1,6 +1,8 @@
+use crate::codegen::ast::Attributed;
 use crate::codegen::frontend::Compiler;
+use crate::codegen::module::ModulePath;
 use crate::codegen::name_mangling::{mangle_enum_variant, mangle_name};
-use crate::codegen::type_ast::{EnumDefinition, StructDefinition};
+use crate::codegen::type_ast::{EnumDefinition, EnumVariant, StructDefinition};
 use crate::codegen::types::{ToCRepr, Type};
 
 impl Compiler {
@@ -28,7 +30,8 @@ impl Compiler {
             })
             .collect();
 
-        let struct_name = mangle_name(&self.current_module, &struct_def.name);
+        let module = struct_def.mangling_module(&self.current_module);
+        let struct_name = mangle_name(&module, &struct_def.name);
         format!("struct {} {{\n{}\n}};", struct_name, field_decls.join("\n"))
     }
 
@@ -36,8 +39,11 @@ impl Compiler {
     /// Simple enums (no data variants) become plain C `enum`s.
     /// Enums with data-carrying variants get a tagged-union layout.
     pub(super) fn generate_enum_declaration(&self, enum_def: &EnumDefinition) -> String {
+        let enum_module = enum_def.mangling_module(&self.current_module);
+        let variant_module = |v: &EnumVariant| -> ModulePath { v.mangling_module(&enum_module) };
+
         let mut output = String::new();
-        let enum_type_name = mangle_name(&self.current_module, &enum_def.name);
+        let enum_type_name = mangle_name(&enum_module, &enum_def.name);
         let all_simple = enum_def.variants.iter().all(|v| v.args.is_empty());
 
         if all_simple {
@@ -45,10 +51,8 @@ impl Compiler {
                 .variants
                 .iter()
                 .map(|v| {
-                    format!(
-                        "    {}",
-                        mangle_enum_variant(&self.current_module, &enum_def.name, &v.name)
-                    )
+                    let mp = variant_module(v);
+                    format!("    {}", mangle_enum_variant(&mp, &enum_def.name, &v.name))
                 })
                 .collect();
 
@@ -62,10 +66,8 @@ impl Compiler {
                 .variants
                 .iter()
                 .map(|v| {
-                    format!(
-                        "    {}",
-                        mangle_enum_variant(&self.current_module, &enum_def.name, &v.name)
-                    )
+                    let mp = variant_module(v);
+                    format!("    {}", mangle_enum_variant(&mp, &enum_def.name, &v.name))
                 })
                 .collect();
             output.push_str(&format!(
@@ -151,7 +153,8 @@ impl Compiler {
                     )
                 })
                 .collect();
-            let ctor = mangle_enum_variant(&self.current_module, &enum_def.name, &v.name);
+            let mp = variant_module(v);
+            let ctor = mangle_enum_variant(&mp, &enum_def.name, &v.name);
             output.push_str(&format!(
                 "{} {}_new({}) {{\n    {} result;\n    result._discriminant = {};\n{}\n    return result;\n}}\n\n",
                 enum_type_name, ctor, params.join(", "),

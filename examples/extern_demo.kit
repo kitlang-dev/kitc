@@ -1,0 +1,16 @@
+include "stdio.h";
+
+#[extern] function sayExtern() {
+    printf("extern");
+}
+
+#[expose] function sayExpose() {
+    printf("expose\n");
+}
+
+function main() {
+    sayExtern();
+    printf(" ");
+    sayExpose();
+    return 0;
+}

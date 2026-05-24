@@ -110,6 +110,8 @@ impl TypeInferencer {
             let updated_struct_def = StructDefinition {
                 name: struct_def.name.clone(),
                 fields: updated_fields,
+                is_public: struct_def.is_public,
+                metadata: struct_def.metadata.clone(),
             };
 
             let field_types: Vec<(String, TypeId)> = updated_struct_def

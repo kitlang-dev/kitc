@@ -11,7 +11,7 @@ use super::Parser;
 use crate::codegen::type_ast::FieldInit;
 
 impl Parser {
-    pub(super) fn parse_expr(&self, pair: Pair<Rule>) -> CompileResult<Expr> {
+    pub(super) fn parse_expr(self, pair: Pair<Rule>) -> CompileResult<Expr> {
         match pair.as_rule() {
             Rule::expr => {
                 let inner = pair.into_inner().next().unwrap();
@@ -66,8 +66,7 @@ impl Parser {
                             ty: TypeId::default(),
                         })
                     }
-                    Rule::postfix => self.parse_expr(first_pair),
-                    Rule::primary => self.parse_expr(first_pair),
+                    Rule::postfix | Rule::primary => self.parse_expr(first_pair),
                     other => Err(parse_error!("Unexpected rule in unary: {other:?}")),
                 }
             }
@@ -219,7 +218,7 @@ impl Parser {
         }
     }
 
-    fn parse_assign_expr(&self, pair: Pair<Rule>) -> CompileResult<Expr> {
+    fn parse_assign_expr(self, pair: Pair<Rule>) -> CompileResult<Expr> {
         let mut inner = pair.into_inner();
         let left_pair = inner.next().unwrap();
         let left = self.parse_expr(left_pair)?;
@@ -238,7 +237,7 @@ impl Parser {
         }
     }
 
-    fn parse_struct_init(&self, pair: Pair<Rule>) -> CompileResult<Expr> {
+    fn parse_struct_init(self, pair: Pair<Rule>) -> CompileResult<Expr> {
         let mut inner = pair.into_inner();
         let type_pair = inner.next().unwrap();
         let struct_ty = self.parse_type(type_pair)?;
@@ -253,7 +252,7 @@ impl Parser {
         })
     }
 
-    fn parse_field_init(&self, pair: Pair<Rule>) -> CompileResult<FieldInit> {
+    fn parse_field_init(self, pair: Pair<Rule>) -> CompileResult<FieldInit> {
         let mut inner = pair.into_inner();
         let name = Self::pair_text(inner.next().unwrap());
         let value = self.parse_expr(inner.next().unwrap())?;

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component as PathComponent, Path, PathBuf};
 use std::process::Command;
 use std::slice;
 use walkdir::WalkDir;
@@ -156,7 +156,7 @@ fn walk_kit_files(dir: &Path, base_path: &ModulePath, results: &mut Vec<ModulePa
         let rel = parent.strip_prefix(&dir).unwrap_or(Path::new(""));
         let mut mod_path = base_path.clone();
         for component in rel.components() {
-            if let std::path::Component::Normal(c) = component {
+            if let PathComponent::Normal(c) = component {
                 mod_path.push(c.to_string_lossy().to_string());
             }
         }
@@ -249,10 +249,18 @@ fn parse_kit_file(file: &Path) -> CompileResult<ParsedFile> {
             Rule::var_decl => globals.push(parser.parse_global_var_decl(pair)?),
             Rule::function_decl => functions.push(parser.parse_function(pair)?),
             Rule::type_def => {
-                for child in pair.into_inner() {
+                let mut inner = pair.into_inner();
+                let (metadata, is_public) = CodeParser::parse_metadata_and_modifiers(inner.next());
+                for child in inner {
                     match child.as_rule() {
-                        Rule::enum_def => enums.push(parser.parse_enum_def(child)?),
-                        Rule::struct_def => structs.push(parser.parse_struct_def(child)?),
+                        Rule::enum_def => {
+                            enums.push(parser.parse_enum_def(child, metadata.clone(), is_public)?)
+                        }
+                        Rule::struct_def => structs.push(parser.parse_struct_def(
+                            child,
+                            metadata.clone(),
+                            is_public,
+                        )?),
                         _ => {}
                     }
                 }

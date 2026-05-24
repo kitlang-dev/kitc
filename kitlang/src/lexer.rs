@@ -1,4 +1,5 @@
 use logos::Logos;
+use std::num::{ParseFloatError, ParseIntError};
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum LexError {
@@ -8,14 +9,14 @@ pub enum LexError {
     Other,
 }
 
-impl From<std::num::ParseIntError> for LexError {
-    fn from(_: std::num::ParseIntError) -> Self {
+impl From<ParseIntError> for LexError {
+    fn from(_: ParseIntError) -> Self {
         LexError::ParseInt
     }
 }
 
-impl From<std::num::ParseFloatError> for LexError {
-    fn from(_: std::num::ParseFloatError) -> Self {
+impl From<ParseFloatError> for LexError {
+    fn from(_: ParseFloatError) -> Self {
         LexError::ParseFloat
     }
 }

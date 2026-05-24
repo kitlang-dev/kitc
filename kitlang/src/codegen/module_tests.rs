@@ -1,6 +1,8 @@
 use super::*;
-use crate::codegen::ast::{Block, Function, GlobalDecl, Program};
-use crate::codegen::types::TypeId;
+use crate::codegen::{
+    ast::{Block, Function, GlobalDecl, Program},
+    types::TypeId,
+};
 
 #[test]
 fn test_module_path_basics() {
@@ -229,6 +231,7 @@ fn test_resolve_qualified_name_dotted() {
     assert_eq!(found_name, "add");
 }
 
+/// Shorthand for ModulePath::from_parts(&[s])
 fn mp(s: &str) -> ModulePath {
     ModulePath::from_parts(&[s])
 }

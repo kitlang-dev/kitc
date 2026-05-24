@@ -3,7 +3,7 @@ use std::fmt::Write;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::codegen::ast::Program;
+use crate::codegen::ast::{Attributed, Program};
 use crate::codegen::frontend::{Compiler, merge_modules_for_inference};
 use crate::codegen::module::{Module, ModulePath};
 use crate::codegen::name_mangling::mangle_name;
@@ -218,11 +218,7 @@ impl Compiler {
                         .map(|a| a.to_c_repr().name)
                         .unwrap_or_else(|| "int".to_string()),
                 };
-                let mod_path = if global.has_no_mangle() {
-                    ModulePath::new()
-                } else {
-                    module.path.clone()
-                };
+                let mod_path = global.mangling_module(&module.path);
                 let gname = mangle_name(&mod_path, &global.name);
                 let const_ = if global.is_const { "const " } else { "" };
                 let _ = writeln!(out, "extern {const_}{ty} {};", gname);
@@ -234,11 +230,7 @@ impl Compiler {
 
         for func in &prog.functions {
             let ret = self.resolve_return_type_c_name(func);
-            let mod_path = if func.has_no_mangle() {
-                ModulePath::new()
-            } else {
-                module.path.clone()
-            };
+            let mod_path = func.mangling_module(&module.path);
             let fname = if func.name == "main" {
                 "main".to_string()
             } else {

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::codegen::ast::{Include, Program};
+use crate::codegen::ast::{Attributed, Include, Program};
 use crate::codegen::type_ast::UsingClause;
 use crate::error::{CompilationError, CompileResult};
 
@@ -235,6 +235,9 @@ impl DependencyGraph {
     }
 
     /// Sort modules so dependencies come before dependents.
+    ///
+    /// # Errors
+    ///
     /// Returns `Err(CircularImport)` if the graph contains a cycle.
     pub fn topological_sort(&self) -> CompileResult<Vec<ModulePath>> {
         let mut remaining_deps: HashMap<&ModulePath, usize> = HashMap::new();
@@ -503,8 +506,7 @@ impl ModuleRegistry {
         let source_path = module.source_path.clone();
         debug_assert!(
             !self.modules.contains_key(&path),
-            "duplicate module: {}",
-            path,
+            "duplicate module: {path}",
         );
         self.graph
             .add_node(ModuleNode::new(path.clone(), source_path));
@@ -553,6 +555,21 @@ impl ModuleRegistry {
                 self.register_extern_name(&global.name)?;
             }
         }
+        for struct_def in &module.program.structs {
+            if struct_def.has_no_mangle() {
+                self.register_extern_name(&struct_def.name)?;
+            }
+        }
+        for enum_def in &module.program.enums {
+            if enum_def.has_no_mangle() {
+                self.register_extern_name(&enum_def.name)?;
+            }
+            for variant in &enum_def.variants {
+                if variant.has_no_mangle() {
+                    self.register_extern_name(&variant.name)?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -563,7 +580,7 @@ impl ModuleRegistry {
             self.bindings.insert(
                 accumulated.join("."),
                 NameBinding::Module(accumulated.clone()),
-            )?
+            )?;
         }
         Ok(())
     }
@@ -644,7 +661,7 @@ impl ModuleRegistry {
             let base_name = parts.last()?.to_string();
             let mod_segments: Vec<String> = parts[..parts.len() - 1]
                 .iter()
-                .map(|s| s.to_string())
+                .map(ToString::to_string)
                 .collect();
             let mod_path = ModulePath(mod_segments);
             if self.modules.contains_key(&mod_path) {
@@ -678,7 +695,7 @@ impl ModuleRegistry {
                 .iter()
                 .map(|c| {
                     c.iter()
-                        .map(|p| p.to_string())
+                        .map(ToString::to_string)
                         .collect::<Vec<_>>()
                         .join(" -> ")
                 })

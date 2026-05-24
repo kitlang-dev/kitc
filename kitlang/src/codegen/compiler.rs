@@ -225,7 +225,7 @@ impl CompilerOptions {
     /// Add library search paths (translated per toolchain).
     pub fn lib_paths<P>(mut self, paths: &[P]) -> Self
     where
-        P: Into<PathBuf> + AsRef<std::ffi::OsStr>,
+        P: Into<PathBuf> + AsRef<OsStr>,
     {
         for p in paths {
             let path: PathBuf = p.into();

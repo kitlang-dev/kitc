@@ -30,10 +30,43 @@ pub fn has_meta(metas: &[Metadata], name: &str) -> bool {
     metas.iter().any(|m| m.has_name(name))
 }
 
-/// Returns `true` if the metadata list contains `#[extern]` or `#[expose]` —
-/// both of which suppress name mangling.
+/// Returns `true` if the metadata list contains `#[extern]` or `#[expose]` - both of which support
+/// name mangling.
 pub fn has_no_mangle(metas: &[Metadata]) -> bool {
     has_meta(metas, "extern") || has_meta(metas, "expose")
+}
+
+/// Trait for AST declaration types that carry metadata attributes
+/// (`#[extern]`, `#[expose]`, etc.).
+///
+/// Provides:
+/// - Raw access to the metadata list
+/// - Query methods for extern/expose checking
+/// - A helper to determine the mangling module path
+pub trait Attributed {
+    /// Access the raw metadata list.
+    fn metadata(&self) -> &[Metadata];
+
+    /// Returns `true` if this declaration has `#[extern]` or `#[expose]` metadata.
+    fn has_no_mangle(&self) -> bool {
+        has_no_mangle(self.metadata())
+    }
+
+    /// Returns `true` if this declaration has `#[extern]` metadata.
+    fn is_extern(&self) -> bool {
+        has_meta(self.metadata(), "extern")
+    }
+
+    /// Returns `ModulePath::new()` (empty = no mangling) when `has_no_mangle()` is true,
+    /// otherwise returns `current_module`. Use this as the module path argument to
+    /// `mangle_name` / `mangle_enum_variant` to control name mangling.
+    fn mangling_module(&self, current_module: &ModulePath) -> ModulePath {
+        if self.has_no_mangle() {
+            ModulePath::new()
+        } else {
+            current_module.clone()
+        }
+    }
 }
 
 /// Represents a C header inclusion.
@@ -82,15 +115,9 @@ pub struct Function {
     pub metadata: Vec<Metadata>,
 }
 
-impl Function {
-    /// Returns `true` if this function has `#[extern]` or `#[expose]` metadata.
-    pub fn has_no_mangle(&self) -> bool {
-        has_no_mangle(&self.metadata)
-    }
-
-    /// Returns `true` if this function has `#[extern]` metadata.
-    pub fn is_extern(&self) -> bool {
-        has_meta(&self.metadata, "extern")
+impl Attributed for Function {
+    fn metadata(&self) -> &[Metadata] {
+        &self.metadata
     }
 }
 
@@ -291,15 +318,9 @@ pub struct GlobalDecl {
     pub metadata: Vec<Metadata>,
 }
 
-impl GlobalDecl {
-    /// Returns `true` if this global has `#[extern]` or `#[expose]` metadata.
-    pub fn has_no_mangle(&self) -> bool {
-        has_no_mangle(&self.metadata)
-    }
-
-    /// Returns `true` if this global has `#[extern]` metadata.
-    pub fn is_extern(&self) -> bool {
-        has_meta(&self.metadata, "extern")
+impl Attributed for GlobalDecl {
+    fn metadata(&self) -> &[Metadata] {
+        &self.metadata
     }
 }
 

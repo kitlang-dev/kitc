@@ -1,12 +1,20 @@
 use crate::codegen::types::TypeId;
 
-use super::ast::{Expr, Function, GlobalDecl};
+use super::ast::{Attributed, Expr, Function, GlobalDecl, Metadata};
 use super::types::Type;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct StructDefinition {
     pub name: String,
     pub fields: Vec<Field>,
+    pub is_public: bool,
+    pub metadata: Vec<Metadata>,
+}
+
+impl Attributed for StructDefinition {
+    fn metadata(&self) -> &[Metadata] {
+        &self.metadata
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -30,12 +38,27 @@ pub struct EnumVariant {
     pub parent: String,
     pub args: Vec<Field>,
     pub default: Option<Expr>,
+    pub metadata: Vec<Metadata>,
+}
+
+impl Attributed for EnumVariant {
+    fn metadata(&self) -> &[Metadata] {
+        &self.metadata
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct EnumDefinition {
     pub name: String,
     pub variants: Vec<EnumVariant>,
+    pub is_public: bool,
+    pub metadata: Vec<Metadata>,
+}
+
+impl Attributed for EnumDefinition {
+    fn metadata(&self) -> &[Metadata] {
+        &self.metadata
+    }
 }
 
 /// A trait definition with methods and type parameters.

@@ -5,7 +5,7 @@ use pest::iterators::Pair;
 use crate::error::CompilationError;
 use crate::{Rule, parse_error};
 
-use super::ast::{Block, Function, GlobalDecl, Include, MetaArg, Metadata, Param, Stmt};
+use super::ast::{Block, Function, GlobalDecl, Include, Literal, MetaArg, Metadata, Param, Stmt};
 use super::module::{ImportType, ModuleImport, ModulePath};
 use super::type_ast::{
     EnumDefinition, EnumVariant, Field, ImplDefinition, RuleDecl, RuleSet, StructDefinition,
@@ -87,7 +87,9 @@ impl Parser {
     }
 
     /// Parse a `metadata_and_modifiers` pair into (metadata list, is_public).
-    fn parse_metadata_and_modifiers(pair: Option<Pair<'_, Rule>>) -> (Vec<Metadata>, bool) {
+    pub(super) fn parse_metadata_and_modifiers(
+        pair: Option<Pair<'_, Rule>>,
+    ) -> (Vec<Metadata>, bool) {
         let Some(p) = pair else {
             return (vec![], true);
         };
@@ -121,17 +123,15 @@ impl Parser {
             // Simple heuristic: quoted strings are literals, unquoted are identifiers
             if text.starts_with('"') && text.ends_with('"') {
                 let val = &text[1..text.len() - 1];
-                args.push(MetaArg::Literal(super::ast::Literal::String(
-                    val.to_string(),
-                )));
+                args.push(MetaArg::Literal(Literal::String(val.to_string())));
             } else if let Ok(n) = text.parse::<i64>() {
-                args.push(MetaArg::Literal(super::ast::Literal::Int(n)));
+                args.push(MetaArg::Literal(Literal::Int(n)));
             } else if text == "true" {
-                args.push(MetaArg::Literal(super::ast::Literal::Bool(true)));
+                args.push(MetaArg::Literal(Literal::Bool(true)));
             } else if text == "false" {
-                args.push(MetaArg::Literal(super::ast::Literal::Bool(false)));
+                args.push(MetaArg::Literal(Literal::Bool(false)));
             } else if text == "null" {
-                args.push(MetaArg::Literal(super::ast::Literal::Null));
+                args.push(MetaArg::Literal(Literal::Null));
             } else {
                 args.push(MetaArg::Identifier(text));
             }
@@ -182,12 +182,16 @@ impl Parser {
     }
 
     /// Parse a `struct_def` rule into a `StructDefinition`.
-    pub fn parse_struct_def(&self, pair: Pair<Rule>) -> CompileResult<StructDefinition> {
+    pub fn parse_struct_def(
+        &self,
+        pair: Pair<Rule>,
+        metadata: Vec<Metadata>,
+        is_public: bool,
+    ) -> CompileResult<StructDefinition> {
         // struct_def = { "struct" ~ identifier ~ type_params? ~ "{" ~ (var_decl)* ~ "}" }
         let mut inner = pair.into_inner();
 
         // First child should be the struct name (identifier)
-        // The "struct" keyword is consumed when matching the rule itself
         let name = Self::pair_text(
             inner
                 .next()
@@ -205,7 +209,6 @@ impl Parser {
         }
 
         // Collect var_decl rules from the remaining children
-        // The struct body contains var_decl elements directly (not wrapped in a block rule)
         let fields: Vec<Field> = inner
             .filter(|p| p.as_rule() == Rule::var_decl)
             .map(|p| self.parse_struct_field(p))
@@ -215,11 +218,21 @@ impl Parser {
             log::warn!("Struct '{}' has empty body", name);
         }
 
-        Ok(StructDefinition { name, fields })
+        Ok(StructDefinition {
+            name,
+            fields,
+            is_public,
+            metadata,
+        })
     }
 
     /// Parse an `enum_def` rule into an `EnumDefinition`.
-    pub fn parse_enum_def(&self, pair: Pair<Rule>) -> CompileResult<EnumDefinition> {
+    pub fn parse_enum_def(
+        &self,
+        pair: Pair<Rule>,
+        metadata: Vec<Metadata>,
+        is_public: bool,
+    ) -> CompileResult<EnumDefinition> {
         let mut inner = pair.into_inner();
 
         let name = Self::pair_text(
@@ -246,7 +259,12 @@ impl Parser {
             log::warn!("Enum '{}' has empty body", name);
         }
 
-        Ok(EnumDefinition { name, variants })
+        Ok(EnumDefinition {
+            name,
+            variants,
+            is_public,
+            metadata,
+        })
     }
 
     fn parse_enum_variant(
@@ -254,11 +272,14 @@ impl Parser {
         pair: Pair<Rule>,
         parent_name: String,
     ) -> CompileResult<EnumVariant> {
+        let mut inner = pair.into_inner();
+        let (metadata, _is_public) = Self::parse_metadata_and_modifiers(inner.next());
+
         let mut identifier_found = None;
         let mut args = Vec::new();
         let mut variant_default = None;
 
-        for child in pair.clone().into_inner() {
+        for child in inner {
             match child.as_rule() {
                 Rule::identifier => {
                     identifier_found = Some(Self::pair_text(child));
@@ -269,9 +290,6 @@ impl Parser {
                 }
                 Rule::expr => {
                     variant_default = Some(self.parse_expr(child)?);
-                }
-                Rule::metadata_and_modifiers => {
-                    // Skip - we already checked this
                 }
                 other => {
                     log::debug!("Unknown rule in enum_variant: {:?}", other);
@@ -293,11 +311,12 @@ impl Parser {
             parent: parent_name,
             args,
             default: None,
+            metadata,
         })
     }
 
     /// Parse a `trait_def` rule into a `TraitDefinition`.
-    pub fn parse_trait_def(&self, pair: Pair<Rule>) -> CompileResult<TraitDefinition> {
+    pub fn parse_trait_def(self, pair: Pair<Rule>) -> CompileResult<TraitDefinition> {
         let mut inner = pair.into_inner();
         // First child is metadata_and_modifiers - skip it for now
         if inner.peek().map(|p| p.as_rule()) == Some(Rule::metadata_and_modifiers) {
@@ -328,7 +347,7 @@ impl Parser {
     }
 
     /// Parse a `trait_impl` rule into an `ImplDefinition`.
-    pub fn parse_trait_impl(&self, pair: Pair<Rule>) -> CompileResult<ImplDefinition> {
+    pub fn parse_trait_impl(self, pair: Pair<Rule>) -> CompileResult<ImplDefinition> {
         let mut inner = pair.into_inner();
         // Skip metadata_and_modifiers
         if inner.peek().map(|p| p.as_rule()) == Some(Rule::metadata_and_modifiers) {
@@ -360,7 +379,7 @@ impl Parser {
     }
 
     /// Parse a `rule_set` rule into a `RuleSet`.
-    pub fn parse_rule_set(&self, pair: Pair<Rule>) -> CompileResult<RuleSet> {
+    pub fn parse_rule_set(self, pair: Pair<Rule>) -> CompileResult<RuleSet> {
         let mut inner = pair.into_inner();
         let name = Self::pair_text(
             inner
@@ -376,7 +395,7 @@ impl Parser {
     }
 
     /// Parse a `rule_decl` rule into a `RuleDecl`.
-    fn parse_rule_decl(&self, pair: Pair<Rule>) -> CompileResult<RuleDecl> {
+    fn parse_rule_decl(self, pair: Pair<Rule>) -> CompileResult<RuleDecl> {
         let mut inner = pair.into_inner();
         let pattern = self.parse_expr(inner.next().ok_or(parse_error!("rule missing pattern"))?)?;
         let body = inner.next().map(|p| self.parse_expr(p)).transpose()?;
@@ -384,7 +403,7 @@ impl Parser {
     }
 
     /// Parse a `typedef_stmt` rule into a `TypeDef`.
-    pub fn parse_typedef(&self, pair: Pair<Rule>) -> CompileResult<TypeDef> {
+    pub fn parse_typedef(self, pair: Pair<Rule>) -> CompileResult<TypeDef> {
         let mut inner = pair.into_inner();
         // typedef_stmt = { "typedef" ~ identifier ~ "=" ~ type_annotation ~ ";" }
         let name = Self::pair_text(inner.next().unwrap());
@@ -394,7 +413,7 @@ impl Parser {
     }
 
     /// Parse a `using_stmt` rule into a `Vec<UsingClause>`.
-    pub fn parse_using(&self, pair: Pair<Rule>) -> CompileResult<Vec<UsingClause>> {
+    pub fn parse_using(self, pair: Pair<Rule>) -> CompileResult<Vec<UsingClause>> {
         // using_stmt = { "using" ~ (using_clause ~ ("," ~ using_clause)*) ~ ";" }
         let clauses: CompileResult<Vec<_>> = pair
             .into_inner()
@@ -405,7 +424,7 @@ impl Parser {
     }
 
     /// Parse a single `using_clause` rule into a `UsingClause`.
-    fn parse_using_clause(&self, pair: Pair<Rule>) -> CompileResult<UsingClause> {
+    fn parse_using_clause(self, pair: Pair<Rule>) -> CompileResult<UsingClause> {
         // using_clause = { ("rules" ~ type_annotation) | ("implicit" ~ expr) }
         // The first alternative yields a `type_annotation` child, the second yields an `expr` child.
         let mut inner = pair.into_inner();
@@ -417,7 +436,7 @@ impl Parser {
         }
     }
 
-    fn parse_struct_field(&self, pair: Pair<Rule>) -> CompileResult<Field> {
+    fn parse_struct_field(self, pair: Pair<Rule>) -> CompileResult<Field> {
         // var_decl = { (var_kw | const_kw) ~ identifier ~ (":" ~ type_annotation)? ~ ("=" ~ expr)? ~ ";" }
         let name = Self::extract_first_identifier(pair.clone())
             .ok_or(parse_error!("struct field missing name"))?;
@@ -443,18 +462,18 @@ impl Parser {
         })
     }
 
-    /// Extract the default expression from a var_decl pair
+    /// Extract the default expression from a `var_decl` pair
     fn extract_default_expr(pair: Pair<'_, Rule>) -> Option<Pair<'_, Rule>> {
         pair.into_inner().find(|p| p.as_rule() == Rule::expr)
     }
 
-    /// Parse type annotation from a var_decl pair
+    /// Parse type annotation from a `var_decl` pair
     fn extract_type_annotation(pair: Pair<'_, Rule>) -> Option<Pair<'_, Rule>> {
         pair.into_inner()
             .find(|p| p.as_rule() == Rule::type_annotation)
     }
 
-    fn parse_params(&self, pair: Pair<Rule>) -> CompileResult<Vec<Param>> {
+    fn parse_params(self, pair: Pair<Rule>) -> CompileResult<Vec<Param>> {
         // param_list = { param ~ ("," ~ param )* }
         pair.into_inner()
             .filter(|p: &Pair<Rule>| p.as_rule() == Rule::param)
@@ -473,7 +492,7 @@ impl Parser {
             .collect()
     }
 
-    fn parse_param_field(&self, pair: Pair<Rule>) -> CompileResult<Field> {
+    fn parse_param_field(self, pair: Pair<Rule>) -> CompileResult<Field> {
         // param = { identifier ~ ":" ~ type_annotation ~ ( "=" ~ expr )? }
         let mut inner = pair.into_inner();
         let name = Self::pair_text(inner.next().unwrap());
@@ -550,13 +569,13 @@ impl Parser {
     /// Parse a top-level `var_decl` rule into a `GlobalDecl`.
     pub fn parse_global_var_decl(&self, pair: Pair<Rule>) -> CompileResult<GlobalDecl> {
         // Extract metadata_and_modifiers, if present
-        let metadata = match pair
+        let (metadata, is_public) = match pair
             .clone()
             .into_inner()
             .find(|p| p.as_rule() == Rule::metadata_and_modifiers)
         {
-            Some(mm) => Self::parse_metadata_and_modifiers(Some(mm)).0,
-            None => vec![],
+            Some(mm) => Self::parse_metadata_and_modifiers(Some(mm)),
+            None => (vec![], true),
         };
 
         // Parse a global variable or constant declaration at module level
@@ -581,7 +600,7 @@ impl Parser {
             inferred: TypeId::default(),
             init,
             is_const,
-            is_public: true,
+            is_public,
             metadata,
         })
     }

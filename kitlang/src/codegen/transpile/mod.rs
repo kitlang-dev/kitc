@@ -6,7 +6,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::codegen::ast::{Block, Expr, Function, GlobalDecl, Program, Stmt};
+use crate::codegen::ast::{Attributed, Block, Expr, Function, GlobalDecl, Program, Stmt};
 use crate::codegen::frontend::Compiler;
 use crate::codegen::module::ModulePath;
 use crate::codegen::name_mangling::{mangle_enum_variant, mangle_name};
@@ -131,11 +131,7 @@ impl Compiler {
     fn transpile_global(&self, global: &GlobalDecl) -> String {
         let ty = self.resolve_type_to_c_name(global.inferred, "int");
         let const_prefix = if global.is_const { "const " } else { "" };
-        let module = if global.has_no_mangle() {
-            ModulePath::new()
-        } else {
-            self.current_module.clone()
-        };
+        let module = global.mangling_module(&self.current_module);
         let global_name = mangle_name(&module, &global.name);
         let extern_prefix = if global.is_extern() { "extern " } else { "" };
 
@@ -154,11 +150,7 @@ impl Compiler {
     fn transpile_function(&self, func: &Function) -> String {
         debug_assert!(!func.name.is_empty(), "function with empty name");
         let return_type = self.resolve_return_type_c_name(func);
-        let module = if func.has_no_mangle() {
-            ModulePath::new()
-        } else {
-            self.current_module.clone()
-        };
+        let module = func.mangling_module(&self.current_module);
         let func_name = if func.name == "main" && !self.current_module.is_empty() {
             "main".to_string()
         } else {
@@ -269,6 +261,14 @@ impl Compiler {
             .get(mod_path)
             .and_then(|m| m.program.functions.iter().find(|f| f.name == name))
             .is_some_and(|f| f.has_no_mangle())
+    }
+
+    /// Check if a global is marked #[extern] or #[expose] in its defining module.
+    fn has_no_mangle_global(&self, mod_path: &ModulePath, name: &str) -> bool {
+        self.registry
+            .get(mod_path)
+            .and_then(|m| m.program.globals.iter().find(|g| g.name == name))
+            .is_some_and(|g| g.has_no_mangle())
     }
 
     /// Remove intermediate `.c` and `.h` files from the build directory.
@@ -394,7 +394,11 @@ impl Compiler {
         match expr {
             Expr::Identifier { name, .. } => {
                 if let Some(mod_path) = self.find_global_module(name) {
-                    mangle_name(&mod_path, name)
+                    if self.has_no_mangle_global(&mod_path, name) {
+                        name.clone()
+                    } else {
+                        mangle_name(&mod_path, name)
+                    }
                 } else {
                     name.clone()
                 }

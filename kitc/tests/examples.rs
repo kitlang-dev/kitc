@@ -294,7 +294,7 @@ fn test_globals_test() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_nested_comments() -> Result<(), Box<dyn std::error::Error>> {
-    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or("couldn't get workspace root")?;
 
@@ -309,7 +309,7 @@ fn test_nested_comments() -> Result<(), Box<dyn std::error::Error>> {
 
     // This test should fail to compile due to nested block comments
     let kitc = cargo_bin!("kitc");
-    let mut cmd = assert_cmd::Command::from_std(std::process::Command::new(kitc));
+    let mut cmd = assert_cmd::Command::from_std(Command::new(kitc));
     cmd.current_dir(workspace_root);
     cmd.arg("compile").arg(&example_file);
 
@@ -343,4 +343,9 @@ fn test_module_double_wildcard_import() -> Result<(), Box<dyn std::error::Error>
 #[test]
 fn test_qualified_call() -> Result<(), Box<dyn std::error::Error>> {
     run_example_test_with_source_path("qualified_call_main", "examples", None)
+}
+
+#[test]
+fn test_extern_demo() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test("extern_demo", None)
 }
