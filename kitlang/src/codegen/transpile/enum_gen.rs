@@ -2,10 +2,19 @@ use crate::codegen::ast::Attributed;
 use crate::codegen::frontend::Compiler;
 use crate::codegen::module::ModulePath;
 use crate::codegen::name_mangling::{mangle_enum_variant, mangle_name};
-use crate::codegen::type_ast::{EnumDefinition, EnumVariant, StructDefinition};
+use crate::codegen::type_ast::{EnumDefinition, EnumVariant, Field, StructDefinition};
 use crate::codegen::types::{ToCRepr, Type};
 
 impl Compiler {
+    fn resolve_field_type(&self, field: &Field) -> Type {
+        self.inferencer
+            .store
+            .resolve(field.ty)
+            .ok()
+            .or(field.annotation.as_ref().cloned())
+            .unwrap_or(Type::Void)
+    }
+
     /// Generate a C struct declaration from a Kit struct definition.
     pub(super) fn generate_struct_declaration(
         &self,
@@ -16,14 +25,7 @@ impl Compiler {
             .fields
             .iter()
             .map(|field| {
-                let ty = self
-                    .inferencer
-                    .store
-                    .resolve(field.ty)
-                    .ok()
-                    .or(field.annotation.as_ref().cloned())
-                    .unwrap_or(Type::Void);
-
+                let ty = self.resolve_field_type(field);
                 let prefix = if field.is_const { "const " } else { "" };
                 let cname = self.type_to_c_name(&ty);
                 format!("    {}{} {};", prefix, cname, field.name)
@@ -81,13 +83,7 @@ impl Compiler {
                     .args
                     .iter()
                     .map(|arg| {
-                        let ty = self
-                            .inferencer
-                            .store
-                            .resolve(arg.ty)
-                            .ok()
-                            .or(arg.annotation.as_ref().cloned())
-                            .unwrap_or(Type::Void);
+                        let ty = self.resolve_field_type(arg);
                         format!("    {} {};", ty.to_c_repr().name, arg.name)
                     })
                     .collect();
@@ -125,18 +121,12 @@ impl Compiler {
         }
 
         for v in enum_def.variants.iter().filter(|v| !v.args.is_empty()) {
-            let params: Vec<String> = v
-                .args
-                .iter()
-                .map(|arg| {
-                    let ty = self
-                        .inferencer
-                        .store
-                        .resolve(arg.ty)
-                        .ok()
-                        .or(arg.annotation.as_ref().cloned())
-                        .unwrap_or(Type::Void);
-                    format!("{} {}", ty.to_c_repr().name, arg.name)
+                let params: Vec<String> = v
+                    .args
+                    .iter()
+                    .map(|arg| {
+                        let ty = self.resolve_field_type(arg);
+                        format!("{} {}", ty.to_c_repr().name, arg.name)
                 })
                 .collect();
             let arg_names: Vec<String> = v.args.iter().map(|arg| arg.name.clone()).collect();

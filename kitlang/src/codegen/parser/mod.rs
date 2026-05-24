@@ -443,14 +443,12 @@ impl Parser {
 
         let is_const = Self::is_const_var_decl(pair.clone());
 
-        // Parse type annotation if present
-        let annotation = Self::extract_type_annotation(pair.clone())
-            .map(|type_pair| self.parse_type(type_pair))
+        let annotation = Self::extract_first_rule(pair.clone(), Rule::type_annotation)
+            .map(|p| self.parse_type(p))
             .transpose()?;
 
-        // Parse default expression if present
-        let default = Self::extract_default_expr(pair.clone())
-            .map(|expr_pair| self.parse_expr(expr_pair))
+        let default = Self::extract_first_rule(pair.clone(), Rule::expr)
+            .map(|p| self.parse_expr(p))
             .transpose()?;
 
         Ok(Field {
@@ -462,15 +460,9 @@ impl Parser {
         })
     }
 
-    /// Extract the default expression from a `var_decl` pair
-    fn extract_default_expr(pair: Pair<'_, Rule>) -> Option<Pair<'_, Rule>> {
-        pair.into_inner().find(|p| p.as_rule() == Rule::expr)
-    }
-
-    /// Parse type annotation from a `var_decl` pair
-    fn extract_type_annotation(pair: Pair<'_, Rule>) -> Option<Pair<'_, Rule>> {
-        pair.into_inner()
-            .find(|p| p.as_rule() == Rule::type_annotation)
+    /// Find the first child pair matching the given rule.
+    fn extract_first_rule(pair: Pair<'_, Rule>, rule: Rule) -> Option<Pair<'_, Rule>> {
+        pair.into_inner().find(|p| p.as_rule() == rule)
     }
 
     fn parse_params(self, pair: Pair<Rule>) -> CompileResult<Vec<Param>> {
@@ -548,14 +540,12 @@ impl Parser {
         let name = Self::extract_first_identifier(pair.clone())
             .ok_or(parse_error!("var_decl missing identifier"))?;
 
-        // Parse type annotation if present
-        let annotation = Self::extract_type_annotation(pair.clone())
-            .map(|type_pair| self.parse_type(type_pair))
+        let annotation = Self::extract_first_rule(pair.clone(), Rule::type_annotation)
+            .map(|p| self.parse_type(p))
             .transpose()?;
 
-        // Parse initializer expression if present
-        let init = Self::extract_init_expr(pair.clone())
-            .map(|expr_pair| self.parse_expr(expr_pair))
+        let init = Self::extract_first_rule(pair.clone(), Rule::expr)
+            .map(|p| self.parse_expr(p))
             .transpose()?;
 
         Ok(Stmt::VarDecl {
@@ -584,14 +574,12 @@ impl Parser {
 
         let is_const = Self::is_const_var_decl(pair.clone());
 
-        // Parse type annotation if present
-        let annotation = Self::extract_type_annotation(pair.clone())
-            .map(|type_pair| self.parse_type(type_pair))
+        let annotation = Self::extract_first_rule(pair.clone(), Rule::type_annotation)
+            .map(|p| self.parse_type(p))
             .transpose()?;
 
-        // Parse initializer expression if present
-        let init = Self::extract_init_expr(pair.clone())
-            .map(|expr_pair| self.parse_expr(expr_pair))
+        let init = Self::extract_first_rule(pair.clone(), Rule::expr)
+            .map(|p| self.parse_expr(p))
             .transpose()?;
 
         Ok(GlobalDecl {
@@ -603,11 +591,6 @@ impl Parser {
             is_public,
             metadata,
         })
-    }
-
-    /// Extract initializer expression from a var_decl pair
-    fn extract_init_expr(pair: Pair<'_, Rule>) -> Option<Pair<'_, Rule>> {
-        pair.into_inner().find(|p| p.as_rule() == Rule::expr)
     }
 
     fn parse_type(&self, pair: Pair<Rule>) -> CompileResult<Type> {
