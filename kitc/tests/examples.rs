@@ -293,6 +293,11 @@ fn test_enum_defaults() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn test_enum_partial() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test("enum_partial", None)
+}
+
+#[test]
 fn test_globals_basic() -> Result<(), Box<dyn std::error::Error>> {
     run_example_test("globals_basic", None)
 }
