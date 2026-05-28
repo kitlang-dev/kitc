@@ -268,6 +268,21 @@ fn test_struct_const_fields() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn test_struct_initialization() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test("struct_initialization", None)
+}
+
+#[test]
+fn test_struct_field_access() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test("struct_field_access", None)
+}
+
+#[test]
+fn test_struct_partial_init() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test("struct_partial_init", None)
+}
+
+#[test]
 fn test_enum_basic() -> Result<(), Box<dyn std::error::Error>> {
     run_example_test("enum_basic", None)
 }

@@ -479,12 +479,13 @@ impl Compiler {
                         "UNKNOWN_STRUCT".to_string()
                     }
                 };
+                let mangled = mangle_name(&self.current_module, &name);
                 let inits = fields
                     .iter()
                     .map(|f| format!(".{} = {}", f.name, self.transpile_expr(&f.value)))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("(struct {}){{{}}}", name, inits)
+                format!("(struct {}){{{}}}", mangled, inits)
             }
             Expr::FieldAccess {
                 expr, field_name, ..
