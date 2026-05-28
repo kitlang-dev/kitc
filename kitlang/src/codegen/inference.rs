@@ -275,519 +275,537 @@ impl TypeInferencer {
 
     /// Infer types for an expression
     fn infer_expr(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
-        let ty = match expr {
-            Expr::Identifier { name, ty: ty_id } => {
-                // First check if it's a global variable
-                if let Some(global_ty) = self.symbols.lookup_global(name) {
-                    *ty_id = global_ty;
-                    global_ty
-                } else if let Some(var_ty) = self.symbols.lookup_var(name) {
-                    *ty_id = var_ty;
-                    var_ty
-                } else {
-                    // Check if this is an enum variant reference (simple variant)
-                    // First try qualified name lookup
-                    if let Some(variant_info) = self.symbols.lookup_enum_variant(name) {
-                        let enum_ty = self
-                            .store
-                            .new_known(Type::Named(variant_info.enum_name.clone()));
-                        *ty_id = enum_ty;
+        Ok(match expr {
+            Expr::Identifier { .. } => self.infer_identifier(expr)?,
+            Expr::Literal { .. } => self.infer_literal(expr)?,
+            Expr::Call { .. } if self.is_call_enum_constructor(expr) => {
+                self.infer_enum_constructor_call(expr)?
+            }
+            Expr::Call { .. } => self.infer_function_call(expr)?,
+            Expr::UnaryOp { .. } => self.infer_unary_op(expr)?,
+            Expr::BinaryOp { .. } => self.infer_binary_op(expr)?,
+            Expr::Assign { .. } => self.infer_assign(expr)?,
+            Expr::If { .. } => self.infer_if_expr(expr)?,
+            Expr::RangeLiteral { .. } => self.infer_range_literal(expr)?,
+            Expr::StructInit { .. } => self.infer_struct_init(expr)?,
+            Expr::FieldAccess { .. } => self.infer_field_access(expr)?,
+            Expr::EnumVariant { .. } => self.infer_enum_variant(expr)?,
+            Expr::EnumInit { .. } => self.infer_enum_init(expr)?,
+        })
+    }
 
-                        // Transform to EnumVariant expression for proper code generation
-                        *expr = Expr::EnumVariant {
-                            enum_name: variant_info.enum_name.clone(),
-                            variant_name: variant_info.variant_name.clone(),
-                            ty: enum_ty,
-                        };
+    fn is_call_enum_constructor(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Call { callee, .. } => self
+                .symbols
+                .lookup_enum_variant_by_simple_name(callee)
+                .is_some(),
+            _ => false,
+        }
+    }
 
-                        enum_ty
-                    } else {
-                        // Try to find variant by simple name across all enums
-                        let mut found = None;
-                        for enum_def in self.symbols.get_enums() {
-                            for variant in &enum_def.variants {
-                                if variant.name == *name {
-                                    found = Some(enum_def.name.clone());
-                                    break;
-                                }
-                            }
-                            if found.is_some() {
-                                break;
-                            }
-                        }
-
-                        if let Some(enum_name) = found {
-                            let enum_ty = self.store.new_known(Type::Named(enum_name.clone()));
-                            *ty_id = enum_ty;
-
-                            // Transform to EnumVariant expression for proper code generation
-                            *expr = Expr::EnumVariant {
-                                enum_name: enum_name.clone(),
-                                variant_name: name.clone(),
-                                ty: enum_ty,
-                            };
-
-                            enum_ty
-                        } else {
-                            return Err(type_err!(
-                                "Use of undeclared variable or enum variant '{name}'"
-                            ));
-                        }
+    fn infer_identifier(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
+        let Expr::Identifier { name, ty: ty_id } = expr else {
+            unreachable!("infer_identifier called on non-Identifier");
+        };
+        if let Some(global_ty) = self.symbols.lookup_global(name) {
+            *ty_id = global_ty;
+            Ok(global_ty)
+        } else if let Some(var_ty) = self.symbols.lookup_var(name) {
+            *ty_id = var_ty;
+            Ok(var_ty)
+        } else if let Some(variant_info) = self.symbols.lookup_enum_variant(name) {
+            let enum_ty = self
+                .store
+                .new_known(Type::Named(variant_info.enum_name.clone()));
+            *ty_id = enum_ty;
+            *expr = Expr::EnumVariant {
+                enum_name: variant_info.enum_name.clone(),
+                variant_name: variant_info.variant_name.clone(),
+                ty: enum_ty,
+            };
+            Ok(enum_ty)
+        } else {
+            let mut found = None;
+            for enum_def in self.symbols.get_enums() {
+                for variant in &enum_def.variants {
+                    if variant.name == *name {
+                        found = Some(enum_def.name.clone());
+                        break;
                     }
                 }
+                if found.is_some() {
+                    break;
+                }
             }
-
-            Expr::Literal {
-                value: lit,
-                ty: ty_id,
-            } => {
-                let ty = match lit {
-                    Literal::Int(_) => Type::Int,
-                    Literal::Float(_) => Type::Float,
-                    Literal::Bool(_) => Type::Bool,
-                    Literal::String(_) => Type::CString,
-                    Literal::Null => Type::Ptr(Box::new(Type::Void)),
+            if let Some(enum_name) = found {
+                let enum_ty = self.store.new_known(Type::Named(enum_name.clone()));
+                *ty_id = enum_ty;
+                *expr = Expr::EnumVariant {
+                    enum_name: enum_name.clone(),
+                    variant_name: name.clone(),
+                    ty: enum_ty,
                 };
-                let type_id = self.store.new_known(ty);
-                *ty_id = type_id;
-                type_id
+                Ok(enum_ty)
+            } else {
+                Err(type_err!(
+                    "Use of undeclared variable or enum variant '{name}'"
+                ))
             }
+        }
+    }
 
-            Expr::Call { callee, args, ty }
-                if let Some(variant_info) =
-                    self.symbols.lookup_enum_variant_by_simple_name(callee) =>
-            {
-                let args_clone = args.clone();
+    fn infer_literal(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
+        let Expr::Literal {
+            value: lit,
+            ty: ty_id,
+        } = expr
+        else {
+            unreachable!("infer_literal called on non-Literal");
+        };
+        let ty = match lit {
+            Literal::Int(_) => Type::Int,
+            Literal::Float(_) => Type::Float,
+            Literal::Bool(_) => Type::Bool,
+            Literal::String(_) => Type::CString,
+            Literal::Null => Type::Ptr(Box::new(Type::Void)),
+        };
+        let type_id = self.store.new_known(ty);
+        *ty_id = type_id;
+        Ok(type_id)
+    }
 
-                let enum_def = self.symbols.lookup_enum(&variant_info.enum_name).cloned();
+    fn infer_enum_constructor_call(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
+        let Expr::Call { callee, args, ty } = expr else {
+            unreachable!("infer_enum_constructor_call called on non-Call");
+        };
+        let variant_info = self
+            .symbols
+            .lookup_enum_variant_by_simple_name(callee)
+            .expect("guard ensures this exists");
+        let args_clone = args.clone();
+        let enum_def = self.symbols.lookup_enum(&variant_info.enum_name).cloned();
+        let mut resolved_args = if let Some(ref ed) = enum_def {
+            Self::resolve_default_args(variant_info, ed, &args_clone)?
+        } else {
+            args_clone
+        };
+        args.clone_from(&resolved_args);
+        let enum_ty = self
+            .store
+            .new_known(Type::Named(variant_info.enum_name.clone()));
+        for arg in &mut resolved_args {
+            self.infer_expr(arg)?;
+        }
+        *ty = enum_ty;
+        Ok(enum_ty)
+    }
 
-                let mut resolved_args = if let Some(ref ed) = enum_def {
-                    Self::resolve_default_args(variant_info, ed, &args_clone)?
-                } else {
-                    args_clone
-                };
+    fn infer_function_call(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
+        let Expr::Call { callee, args, ty } = expr else {
+            unreachable!("infer_function_call called on non-Call");
+        };
+        let (param_tys, ret_ty) = if let Some(sig) = self.symbols.lookup_function(callee) {
+            sig
+        } else {
+            let void_ty = self.store.new_known(Type::Void);
+            (vec![], void_ty)
+        };
 
-                args.clone_from(&resolved_args);
+        if !param_tys.is_empty() && args.len() != param_tys.len() {
+            return Err(type_err!(
+                "Function '{}' expects {} arguments, got {}",
+                callee,
+                param_tys.len(),
+                args.len()
+            ));
+        }
 
-                let enum_ty = self
-                    .store
-                    .new_known(Type::Named(variant_info.enum_name.clone()));
-
-                for arg in &mut resolved_args {
-                    self.infer_expr(arg)?;
-                }
-
-                *ty = enum_ty;
-                enum_ty
+        if param_tys.is_empty() {
+            for arg in args.iter_mut() {
+                self.infer_expr(arg)?;
             }
-            Expr::Call { callee, args, ty } => {
-                let (param_tys, ret_ty) = if let Some(sig) = self.symbols.lookup_function(callee) {
-                    sig
-                } else {
-                    let void_ty = self.store.new_known(Type::Void);
-                    (vec![], void_ty)
-                };
-
-                if !param_tys.is_empty() && args.len() != param_tys.len() {
-                    return Err(type_err!(
-                        "Function '{}' expects {} arguments, got {}",
-                        callee,
-                        param_tys.len(),
-                        args.len()
-                    ));
-                }
-
-                if param_tys.is_empty() {
-                    for arg in args.iter_mut() {
-                        self.infer_expr(arg)?;
-                    }
-                } else {
-                    for (arg, param_ty) in args.iter_mut().zip(param_tys.iter()) {
-                        let arg_ty = self.infer_expr(arg)?;
-                        self.unify(arg_ty, *param_ty)?;
-                    }
-                }
-
-                *ty = ret_ty;
-                ret_ty
+        } else {
+            for (arg, param_ty) in args.iter_mut().zip(param_tys.iter()) {
+                let arg_ty = self.infer_expr(arg)?;
+                self.unify(arg_ty, *param_ty)?;
             }
+        }
 
-            Expr::UnaryOp { op, expr, ty } => {
-                let expr_ty = self.infer_expr(expr)?;
+        *ty = ret_ty;
+        Ok(ret_ty)
+    }
 
-                // Unary operators typically preserve type (except address-of)
-                let result_ty = match op {
-                    UnaryOperator::AddressOf => {
-                        let resolved = self
-                            .store
-                            .resolve(expr_ty)
-                            .map_err(CompilationError::TypeError)?;
-                        let ptr_ty = Type::Ptr(Box::new(resolved));
-                        self.store.new_known(ptr_ty)
-                    }
-                    UnaryOperator::Dereference => {
-                        let resolved = self
-                            .store
-                            .resolve(expr_ty)
-                            .map_err(CompilationError::TypeError)?;
-                        if let Type::Ptr(inner_ty) = resolved {
-                            self.store.new_known(*inner_ty)
-                        } else {
-                            return Err(type_err!(
-                                "Cannot dereference non-pointer type: {resolved:?}"
-                            ));
-                        }
-                    }
-                    _ => expr_ty,
-                };
+    fn infer_unary_op(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
+        let Expr::UnaryOp {
+            op,
+            expr: inner,
+            ty,
+        } = expr
+        else {
+            unreachable!("infer_unary_op called on non-UnaryOp");
+        };
+        let expr_ty = self.infer_expr(inner)?;
 
-                *ty = result_ty;
-                result_ty
-            }
-
-            Expr::BinaryOp {
-                op,
-                left,
-                right,
-                ty,
-            } => {
-                let left_ty = self.infer_expr(left)?;
-                let right_ty = self.infer_expr(right)?;
-
-                // Result type depends on operator
-                let result_ty = match op {
-                    BinaryOperator::And | BinaryOperator::Or => {
-                        let bool_ty = self.store.new_known(Type::Bool);
-                        self.unify(left_ty, bool_ty)?;
-                        self.unify(right_ty, bool_ty)?;
-                        bool_ty
-                    }
-                    BinaryOperator::Eq
-                    | BinaryOperator::Ne
-                    | BinaryOperator::Lt
-                    | BinaryOperator::Gt
-                    | BinaryOperator::Le
-                    | BinaryOperator::Ge => {
-                        self.unify(left_ty, right_ty)?;
-                        self.store.new_known(Type::Bool)
-                    }
-                    _ => {
-                        self.unify(left_ty, right_ty)?;
-                        left_ty
-                    }
-                };
-
-                *ty = result_ty;
-                result_ty
-            }
-
-            Expr::Assign {
-                op: _,
-                left,
-                right,
-                ty,
-            } => {
-                let right_ty = self.infer_expr(right)?;
-                let left_ty = self.infer_expr(left)?;
-
-                // Assignment: right must unify with left
-                self.unify(left_ty, right_ty)?;
-
-                *ty = left_ty;
-                left_ty
-            }
-
-            Expr::If {
-                cond,
-                then_branch,
-                else_branch,
-                ty,
-            } => {
-                let cond_ty = self.infer_expr(cond)?;
-                let bool_ty = self.store.new_known(Type::Bool);
-                self.unify(cond_ty, bool_ty)?;
-
-                let then_ty = self.infer_expr(then_branch)?;
-                let else_ty = self.infer_expr(else_branch)?;
-
-                self.unify(then_ty, else_ty)?;
-
-                *ty = then_ty;
-                then_ty
-            }
-
-            Expr::RangeLiteral { start, end } => {
-                // Range literals are only used in for loop context
-                let start_ty = self.infer_expr(start)?;
-                let end_ty = self.infer_expr(end)?;
-
-                let int_ty = self.store.new_known(Type::Int);
-                self.unify(start_ty, int_ty)?;
-                self.unify(end_ty, int_ty)?;
-
-                // Return a dummy type -> ranges don't have their own type
-                self.store.new_known(Type::Void)
-            }
-
-            Expr::StructInit {
-                ty,
-                struct_type,
-                fields,
-            } => {
-                // Resolve the struct type from the annotation
-                let resolved_ty = if let Some(ref st) = *struct_type {
-                    self.store.new_known(st.clone())
-                } else {
-                    return Err(type_err!("StructInit missing type annotation"));
-                };
-
-                // Look up struct definition in symbol table using the resolved type
-                let struct_def = {
-                    let resolved = self
-                        .store
-                        .resolve(resolved_ty)
-                        .map_err(CompilationError::TypeError)?;
-                    match resolved {
-                        Type::Named(name) => self
-                            .symbols
-                            .lookup_struct(&name)
-                            .ok_or_else(|| type_err!("Unknown struct type '{name}'"))?,
-                        Type::Struct { name, .. } => self
-                            .symbols
-                            .lookup_struct(&name)
-                            .ok_or_else(|| type_err!("Unknown struct type '{name}'"))?,
-                        _ => {
-                            return Err(type_err!("StructInit requires a struct type"));
-                        }
-                    }
-                };
-
-                // Build set of provided field names for validation
-                let provided_field_names: HashSet<String> =
-                    fields.iter().map(|f| f.name.clone()).collect();
-
-                // Validate all provided fields exist in struct
-                for field_init in fields.iter() {
-                    if !struct_def.fields.iter().any(|f| f.name == field_init.name) {
-                        return Err(type_err!(
-                            "Struct '{}' has no field '{}'",
-                            struct_def.name,
-                            field_init.name
-                        ));
-                    }
-                }
-
-                // Validate all required fields are provided or have defaults
-                for field_def in &struct_def.fields {
-                    if !provided_field_names.contains(&field_def.name)
-                        && field_def.default.is_none()
-                    {
-                        return Err(type_err!(
-                            "Struct '{}' field '{}' has no default value and was not provided in initialization",
-                            struct_def.name,
-                            field_def.name
-                        ));
-                    }
-                }
-
-                // Collect field info we need (release struct_def borrow afterwards)
-                let field_infos: Vec<(String, Option<Type>, Option<Expr>)> = struct_def
-                    .fields
-                    .iter()
-                    .map(|f| (f.name.clone(), f.annotation.clone(), f.default.clone()))
-                    .collect();
-
-                // Release the borrow on self.symbols
-                let _ = struct_def;
-
-                // Inject default values for missing fields
-                for field_info in &field_infos {
-                    let field_name = &field_info.0;
-                    if !provided_field_names.contains(field_name)
-                        && let Some(default_expr) = &field_info.2
-                    {
-                        // Clone the default expression and add it to fields
-                        fields.push(FieldInit {
-                            name: field_name.clone(),
-                            value: default_expr.clone(),
-                        });
-                    }
-                }
-
-                // Infer types for all field initializer expressions (including defaults)
-                for field_init in fields.iter_mut() {
-                    // Find the corresponding field info
-                    let field_info = field_infos
-                        .iter()
-                        .find(|fi| fi.0 == field_init.name)
-                        .expect("field should exist");
-
-                    // Infer the type of the initializer expression directly (not cloned)
-                    let inferred_ty = self.infer_expr(&mut field_init.value)?;
-
-                    // Get the expected field type
-                    let expected_ty = if let Some(ref ann) = field_info.1 {
-                        self.store.new_known(ann.clone())
-                    } else {
-                        inferred_ty
-                    };
-
-                    // Unify
-                    self.unify(inferred_ty, expected_ty)?;
-                }
-
-                *ty = resolved_ty;
-                resolved_ty
-            }
-
-            Expr::FieldAccess {
-                expr,
-                field_name,
-                ty: field_ty,
-            } => {
-                let container_ty = self.infer_expr(expr)?;
-
-                // Resolve container type, handle both Struct and Named types
+        let result_ty = match op {
+            UnaryOperator::AddressOf => {
                 let resolved = self
                     .store
-                    .resolve(container_ty)
+                    .resolve(expr_ty)
                     .map_err(CompilationError::TypeError)?;
-
-                // For Named types, we need to look up the struct or enum definition
-                let (struct_name, fields) = match resolved {
-                    Type::Struct { name, fields } => (name, fields),
-                    Type::Named(type_name) => {
-                        // First try to look up as struct
-                        if let Some(struct_def) = self.symbols.lookup_struct(&type_name) {
-                            let fields: Vec<(String, TypeId)> = struct_def
-                                .fields
-                                .iter()
-                                .map(|f| (f.name.clone(), f.ty))
-                                .collect();
-                            (type_name, fields)
-                        } else if let Some(enum_def) = self.symbols.lookup_enum(&type_name) {
-                            // For enum field access like `d1.VariantName.field`,
-                            // we need to check if the field_name is actually a variant name
-                            if let Some(variant) =
-                                enum_def.variants.iter().find(|v| v.name == *field_name)
-                            {
-                                // The field access is on the variant's fields
-                                // Return the variant's args as fields
-                                let fields: Vec<(String, TypeId)> = variant
-                                    .args
-                                    .iter()
-                                    .map(|f| (f.name.clone(), f.ty))
-                                    .collect();
-                                (type_name, fields)
-                            } else {
-                                return Err(type_err!(
-                                    "Enum '{}' has no variant '{}'",
-                                    type_name,
-                                    field_name
-                                ));
-                            }
-                        } else {
-                            return Err(type_err!(
-                                "Cannot access field on unknown type '{}'",
-                                type_name
-                            ));
-                        }
-                    }
-                    _ => {
-                        return Err(type_err!("Cannot access field on non-struct type"));
-                    }
-                };
-
-                // Look up field in struct/variant
-                let field_type_id = fields
-                    .iter()
-                    .find(|(fname, _)| fname == field_name)
-                    .ok_or_else(|| {
-                        type_err!(
-                            "Struct/variant '{}' has no field '{}'",
-                            struct_name,
-                            field_name
-                        )
-                    })?
-                    .1;
-
-                *field_ty = field_type_id;
-                field_type_id
+                let ptr_ty = Type::Ptr(Box::new(resolved));
+                self.store.new_known(ptr_ty)
             }
-
-            Expr::EnumVariant {
-                enum_name,
-                variant_name,
-                ty,
-            } => {
-                let _variant_info = self
-                    .symbols
-                    .lookup_variant(enum_name, variant_name)
-                    .ok_or_else(|| {
-                        type_err!("Unknown enum variant '{}.{}'", enum_name, variant_name)
-                    })?;
-
-                // Create a named type for the enum
-                let enum_ty = self.store.new_known(Type::Named(enum_name.clone()));
-                *ty = enum_ty;
-                enum_ty
-            }
-
-            Expr::EnumInit {
-                enum_name,
-                variant_name,
-                args,
-                ty,
-            } => {
-                let (variant_info, enum_def) = {
-                    let info = self
-                        .symbols
-                        .lookup_variant(enum_name, variant_name)
-                        .ok_or_else(|| {
-                            type_err!("Unknown enum variant '{}.{}'", enum_name, variant_name)
-                        })?
-                        .clone();
-
-                    let enum_def = self
-                        .symbols
-                        .lookup_enum(enum_name)
-                        .ok_or_else(|| type_err!("Unknown enum '{}'", enum_name))?
-                        .clone();
-
-                    (info, enum_def)
-                };
-
-                // Resolve default arguments (following Haskell compiler approach)
-                let resolved_args = Self::resolve_default_args(&variant_info, &enum_def, args)?;
-
-                // Update the args in the expression with resolved defaults
-                *args = resolved_args;
-
-                // Validate argument count matches (after defaults are resolved)
-                if args.len() != variant_info.arg_types.len() {
+            UnaryOperator::Dereference => {
+                let resolved = self
+                    .store
+                    .resolve(expr_ty)
+                    .map_err(CompilationError::TypeError)?;
+                if let Type::Ptr(inner_ty) = resolved {
+                    self.store.new_known(*inner_ty)
+                } else {
                     return Err(type_err!(
-                        "Enum variant '{}.{}' expects {} arguments, got {}",
-                        enum_name,
-                        variant_name,
-                        variant_info.arg_types.len(),
-                        args.len()
+                        "Cannot dereference non-pointer type: {resolved:?}"
                     ));
                 }
+            }
+            _ => expr_ty,
+        };
 
-                // Infer types for all arguments and unify with expected types
-                for (arg, &expected_ty) in args.iter_mut().zip(variant_info.arg_types.iter()) {
-                    let arg_ty = self.infer_expr(arg)?;
-                    self.unify(arg_ty, expected_ty)?;
-                }
+        *ty = result_ty;
+        Ok(result_ty)
+    }
 
-                // Create a named type for the enum
-                let enum_ty = self.store.new_known(Type::Named(enum_name.clone()));
-                *ty = enum_ty;
-                enum_ty
+    fn infer_binary_op(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
+        let Expr::BinaryOp {
+            op,
+            left,
+            right,
+            ty,
+        } = expr
+        else {
+            unreachable!("infer_binary_op called on non-BinaryOp");
+        };
+        let left_ty = self.infer_expr(left)?;
+        let right_ty = self.infer_expr(right)?;
+
+        let result_ty = match op {
+            BinaryOperator::And | BinaryOperator::Or => {
+                let bool_ty = self.store.new_known(Type::Bool);
+                self.unify(left_ty, bool_ty)?;
+                self.unify(right_ty, bool_ty)?;
+                bool_ty
+            }
+            BinaryOperator::Eq
+            | BinaryOperator::Ne
+            | BinaryOperator::Lt
+            | BinaryOperator::Gt
+            | BinaryOperator::Le
+            | BinaryOperator::Ge => {
+                self.unify(left_ty, right_ty)?;
+                self.store.new_known(Type::Bool)
+            }
+            _ => {
+                self.unify(left_ty, right_ty)?;
+                left_ty
             }
         };
 
-        Ok(ty)
+        *ty = result_ty;
+        Ok(result_ty)
+    }
+
+    fn infer_assign(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
+        let Expr::Assign {
+            op: _,
+            left,
+            right,
+            ty,
+        } = expr
+        else {
+            unreachable!("infer_assign called on non-Assign");
+        };
+        let right_ty = self.infer_expr(right)?;
+        let left_ty = self.infer_expr(left)?;
+
+        self.unify(left_ty, right_ty)?;
+
+        *ty = left_ty;
+        Ok(left_ty)
+    }
+
+    fn infer_if_expr(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
+        let Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ty,
+        } = expr
+        else {
+            unreachable!("infer_if_expr called on non-If");
+        };
+        let cond_ty = self.infer_expr(cond)?;
+        let bool_ty = self.store.new_known(Type::Bool);
+        self.unify(cond_ty, bool_ty)?;
+
+        let then_ty = self.infer_expr(then_branch)?;
+        let else_ty = self.infer_expr(else_branch)?;
+
+        self.unify(then_ty, else_ty)?;
+
+        *ty = then_ty;
+        Ok(then_ty)
+    }
+
+    fn infer_range_literal(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
+        let Expr::RangeLiteral { start, end } = expr else {
+            unreachable!("infer_range_literal called on non-RangeLiteral");
+        };
+        let start_ty = self.infer_expr(start)?;
+        let end_ty = self.infer_expr(end)?;
+
+        let int_ty = self.store.new_known(Type::Int);
+        self.unify(start_ty, int_ty)?;
+        self.unify(end_ty, int_ty)?;
+
+        Ok(self.store.new_known(Type::Void))
+    }
+
+    fn infer_struct_init(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
+        let Expr::StructInit {
+            ty,
+            struct_type,
+            fields,
+        } = expr
+        else {
+            unreachable!("infer_struct_init called on non-StructInit");
+        };
+
+        let resolved_ty = if let Some(ref st) = *struct_type {
+            self.store.new_known(st.clone())
+        } else {
+            return Err(type_err!("StructInit missing type annotation"));
+        };
+
+        let struct_def = {
+            let resolved = self
+                .store
+                .resolve(resolved_ty)
+                .map_err(CompilationError::TypeError)?;
+            match resolved {
+                Type::Named(name) => self
+                    .symbols
+                    .lookup_struct(&name)
+                    .ok_or_else(|| type_err!("Unknown struct type '{name}'"))?,
+                Type::Struct { name, .. } => self
+                    .symbols
+                    .lookup_struct(&name)
+                    .ok_or_else(|| type_err!("Unknown struct type '{name}'"))?,
+                _ => return Err(type_err!("StructInit requires a struct type")),
+            }
+        };
+
+        let provided_field_names: HashSet<String> = fields.iter().map(|f| f.name.clone()).collect();
+
+        for field_init in fields.iter() {
+            if !struct_def.fields.iter().any(|f| f.name == field_init.name) {
+                return Err(type_err!(
+                    "Struct '{}' has no field '{}'",
+                    struct_def.name,
+                    field_init.name
+                ));
+            }
+        }
+
+        for field_def in &struct_def.fields {
+            if !provided_field_names.contains(&field_def.name) && field_def.default.is_none() {
+                return Err(type_err!(
+                    "Struct '{}' field '{}' has no default value and was not provided in initialization",
+                    struct_def.name,
+                    field_def.name
+                ));
+            }
+        }
+
+        let field_infos: Vec<(String, Option<Type>, Option<Expr>)> = struct_def
+            .fields
+            .iter()
+            .map(|f| (f.name.clone(), f.annotation.clone(), f.default.clone()))
+            .collect();
+
+        let _ = struct_def;
+
+        for field_info in &field_infos {
+            let field_name = &field_info.0;
+            if !provided_field_names.contains(field_name)
+                && let Some(default_expr) = &field_info.2
+            {
+                fields.push(FieldInit {
+                    name: field_name.clone(),
+                    value: default_expr.clone(),
+                });
+            }
+        }
+
+        for field_init in fields.iter_mut() {
+            let field_info = field_infos
+                .iter()
+                .find(|fi| fi.0 == field_init.name)
+                .ok_or_else(|| {
+                    type_err!("Struct field '{}' not found in definition", field_init.name)
+                })?;
+
+            let inferred_ty = self.infer_expr(&mut field_init.value)?;
+
+            let expected_ty = if let Some(ref ann) = field_info.1 {
+                self.store.new_known(ann.clone())
+            } else {
+                inferred_ty
+            };
+
+            self.unify(inferred_ty, expected_ty)?;
+        }
+
+        *ty = resolved_ty;
+        Ok(resolved_ty)
+    }
+
+    fn infer_field_access(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
+        let Expr::FieldAccess {
+            expr: inner,
+            field_name,
+            ty: field_ty,
+        } = expr
+        else {
+            unreachable!("infer_field_access called on non-FieldAccess");
+        };
+
+        let container_ty = self.infer_expr(inner)?;
+
+        let resolved = self
+            .store
+            .resolve(container_ty)
+            .map_err(CompilationError::TypeError)?;
+
+        let (struct_name, fields) = match resolved {
+            Type::Struct { name, fields } => (name, fields),
+            Type::Named(type_name) => {
+                if let Some(struct_def) = self.symbols.lookup_struct(&type_name) {
+                    let fields: Vec<(String, TypeId)> = struct_def
+                        .fields
+                        .iter()
+                        .map(|f| (f.name.clone(), f.ty))
+                        .collect();
+                    (type_name, fields)
+                } else if let Some(enum_def) = self.symbols.lookup_enum(&type_name) {
+                    if let Some(variant) = enum_def.variants.iter().find(|v| v.name == *field_name)
+                    {
+                        let fields: Vec<(String, TypeId)> = variant
+                            .args
+                            .iter()
+                            .map(|f| (f.name.clone(), f.ty))
+                            .collect();
+                        (type_name, fields)
+                    } else {
+                        return Err(type_err!(
+                            "Enum '{}' has no variant '{}'",
+                            type_name,
+                            field_name
+                        ));
+                    }
+                } else {
+                    return Err(type_err!(
+                        "Cannot access field on unknown type '{}'",
+                        type_name
+                    ));
+                }
+            }
+            _ => return Err(type_err!("Cannot access field on non-struct type")),
+        };
+
+        let field_type_id = fields
+            .iter()
+            .find(|(fname, _)| fname == field_name)
+            .ok_or_else(|| {
+                type_err!(
+                    "Struct/variant '{}' has no field '{}'",
+                    struct_name,
+                    field_name
+                )
+            })?
+            .1;
+
+        *field_ty = field_type_id;
+        Ok(field_type_id)
+    }
+
+    fn infer_enum_variant(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
+        let Expr::EnumVariant {
+            enum_name,
+            variant_name,
+            ty,
+        } = expr
+        else {
+            unreachable!("infer_enum_variant called on non-EnumVariant");
+        };
+        let _variant_info = self
+            .symbols
+            .lookup_variant(enum_name, variant_name)
+            .ok_or_else(|| type_err!("Unknown enum variant '{}.{}'", enum_name, variant_name))?;
+
+        let enum_ty = self.store.new_known(Type::Named(enum_name.clone()));
+        *ty = enum_ty;
+        Ok(enum_ty)
+    }
+
+    fn infer_enum_init(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
+        let Expr::EnumInit {
+            enum_name,
+            variant_name,
+            args,
+            ty,
+        } = expr
+        else {
+            unreachable!("infer_enum_init called on non-EnumInit");
+        };
+
+        let (variant_info, enum_def) = {
+            let info = self
+                .symbols
+                .lookup_variant(enum_name, variant_name)
+                .ok_or_else(|| type_err!("Unknown enum variant '{}.{}'", enum_name, variant_name))?
+                .clone();
+
+            let enum_def = self
+                .symbols
+                .lookup_enum(enum_name)
+                .ok_or_else(|| type_err!("Unknown enum '{}'", enum_name))?
+                .clone();
+
+            (info, enum_def)
+        };
+
+        let resolved_args = Self::resolve_default_args(&variant_info, &enum_def, args)?;
+        *args = resolved_args;
+
+        if args.len() != variant_info.arg_types.len() {
+            return Err(type_err!(
+                "Enum variant '{}.{}' expects {} arguments, got {}",
+                enum_name,
+                variant_name,
+                variant_info.arg_types.len(),
+                args.len()
+            ));
+        }
+
+        for (arg, &expected_ty) in args.iter_mut().zip(variant_info.arg_types.iter()) {
+            let arg_ty = self.infer_expr(arg)?;
+            self.unify(arg_ty, expected_ty)?;
+        }
+
+        let enum_ty = self.store.new_known(Type::Named(enum_name.clone()));
+        *ty = enum_ty;
+        Ok(enum_ty)
     }
 
     /// Resolve default arguments for enum variant constructors.

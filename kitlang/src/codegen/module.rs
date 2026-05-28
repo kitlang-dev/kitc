@@ -343,8 +343,9 @@ impl DependencyGraph {
         cycles: &mut Vec<Vec<ModulePath>>,
     ) {
         if path_set.contains(path) {
-            let start = path_stack.iter().position(|p| p == path).unwrap();
-            cycles.push(path_stack[start..].to_vec());
+            if let Some(start) = path_stack.iter().position(|p| p == path) {
+                cycles.push(path_stack[start..].to_vec());
+            }
             return;
         }
         if global_visited.contains(path) {

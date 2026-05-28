@@ -14,7 +14,10 @@ impl Parser {
     pub(super) fn parse_expr(self, pair: Pair<Rule>) -> CompileResult<Expr> {
         match pair.as_rule() {
             Rule::expr => {
-                let inner = pair.into_inner().next().unwrap();
+                let inner = pair
+                    .into_inner()
+                    .next()
+                    .ok_or_else(|| parse_error!("expr pair is empty"))?;
                 self.parse_expr(inner)
             }
             Rule::assign => self.parse_assign_expr(pair),
@@ -29,10 +32,18 @@ impl Parser {
             | Rule::bitwise_and
             | Rule::shift => {
                 let mut inner = pair.into_inner();
-                let mut left = self.parse_expr(inner.next().unwrap())?;
+                let mut left = self.parse_expr(
+                    inner
+                        .next()
+                        .ok_or_else(|| parse_error!("binary op missing left operand"))?,
+                )?;
                 while let Some(op_pair) = inner.next() {
                     let op = BinaryOperator::from_rule_pair(&op_pair)?;
-                    let right = self.parse_expr(inner.next().unwrap())?;
+                    let right = self.parse_expr(
+                        inner
+                            .next()
+                            .ok_or_else(|| parse_error!("binary op missing right operand"))?,
+                    )?;
                     left = Expr::BinaryOp {
                         op,
                         left: Box::new(left),
@@ -44,13 +55,17 @@ impl Parser {
             }
             Rule::unary => {
                 let mut inner_pairs = pair.into_inner();
-                let first_pair = inner_pairs.next().unwrap();
+                let first_pair = inner_pairs
+                    .next()
+                    .ok_or_else(|| parse_error!("unary expression missing operand"))?;
                 match first_pair.as_rule() {
                     Rule::unary_op => {
                         let op_str = first_pair.as_str();
                         let op = UnaryOperator::from_str(op_str)
                             .map_err(|_| parse_error!("invalid unary operation: {op_str}"))?;
-                        let expr = self.parse_expr(inner_pairs.next().unwrap())?;
+                        let expr = self.parse_expr(inner_pairs.next().ok_or_else(|| {
+                            parse_error!("unary expr missing operand after operator")
+                        })?)?;
                         Ok(Expr::UnaryOp {
                             op,
                             expr: Box::new(expr),
@@ -59,7 +74,9 @@ impl Parser {
                     }
                     Rule::ADDRESS_OF_OP => {
                         let op = UnaryOperator::AddressOf;
-                        let expr = self.parse_expr(inner_pairs.next().unwrap())?;
+                        let expr = self.parse_expr(inner_pairs.next().ok_or_else(|| {
+                            parse_error!("unary expr missing operand after operator")
+                        })?)?;
                         Ok(Expr::UnaryOp {
                             op,
                             expr: Box::new(expr),
@@ -75,10 +92,16 @@ impl Parser {
                 ty: TypeId::default(),
             }),
             Rule::literal => {
-                let inner = pair.into_inner().next().unwrap();
+                let inner = pair
+                    .into_inner()
+                    .next()
+                    .ok_or_else(|| parse_error!("literal is empty"))?;
                 match inner.as_rule() {
                     Rule::number => {
-                        let num_pair = inner.into_inner().next().unwrap();
+                        let num_pair = inner
+                            .into_inner()
+                            .next()
+                            .ok_or_else(|| parse_error!("number literal is empty"))?;
                         match num_pair.as_rule() {
                             Rule::integer => {
                                 let s = num_pair.as_str();
@@ -104,7 +127,7 @@ impl Parser {
                         }
                     }
                     Rule::boolean => Self::parse_bool_literal(inner.as_str()),
-                    Rule::char_literal => todo!("char literal parsing not implemented"),
+                    Rule::char_literal => todo!("char literal parsing not yet supported"),
                     _ => Err(parse_error!(
                         "Unexpected literal type: {:?}",
                         inner.as_rule()
@@ -122,7 +145,11 @@ impl Parser {
             }
             Rule::function_call_expr => {
                 let mut inner = pair.into_inner();
-                let callee = Self::pair_text(inner.next().unwrap());
+                let callee = Self::pair_text(
+                    inner
+                        .next()
+                        .ok_or_else(|| parse_error!("function call missing callee"))?,
+                );
                 let args = inner
                     .filter(|p: &Pair<Rule>| p.as_rule() == Rule::expr)
                     .map(|p: Pair<Rule>| self.parse_expr(p))
@@ -135,9 +162,21 @@ impl Parser {
             }
             Rule::if_expr => {
                 let mut inner = pair.into_inner();
-                let cond = self.parse_expr(inner.next().unwrap())?;
-                let then_branch = self.parse_expr(inner.next().unwrap())?;
-                let else_branch = self.parse_expr(inner.next().unwrap())?;
+                let cond = self.parse_expr(
+                    inner
+                        .next()
+                        .ok_or_else(|| parse_error!("if expr missing condition"))?,
+                )?;
+                let then_branch = self.parse_expr(
+                    inner
+                        .next()
+                        .ok_or_else(|| parse_error!("if expr missing then branch"))?,
+                )?;
+                let else_branch = self.parse_expr(
+                    inner
+                        .next()
+                        .ok_or_else(|| parse_error!("if expr missing else branch"))?,
+                )?;
                 Ok(Expr::If {
                     cond: Box::new(cond),
                     then_branch: Box::new(then_branch),
@@ -158,7 +197,9 @@ impl Parser {
                         other => Err(parse_error!("Unknown primary keyword: {}", other)),
                     }
                 } else {
-                    let inner_pair = inner.next().unwrap();
+                    let inner_pair = inner
+                        .next()
+                        .ok_or_else(|| parse_error!("primary expr is empty"))?;
                     match inner_pair.as_rule() {
                         Rule::identifier => Ok(Expr::Identifier {
                             name: Self::pair_text(inner_pair),
@@ -184,7 +225,11 @@ impl Parser {
             }
             Rule::postfix => {
                 let mut inner = pair.into_inner();
-                let mut expr = self.parse_expr(inner.next().unwrap())?;
+                let mut expr = self.parse_expr(
+                    inner
+                        .next()
+                        .ok_or_else(|| parse_error!("postfix expr missing base expression"))?,
+                )?;
                 for field_pair in inner {
                     if field_pair.as_rule() == Rule::postfix_field {
                         let mut field_inner = field_pair.into_inner();
@@ -205,8 +250,16 @@ impl Parser {
             Rule::struct_init => self.parse_struct_init(pair),
             Rule::range_expr => {
                 let mut inner = pair.into_inner();
-                let start = self.parse_expr(inner.next().unwrap())?;
-                let end = self.parse_expr(inner.next().unwrap())?;
+                let start = self.parse_expr(
+                    inner
+                        .next()
+                        .ok_or_else(|| parse_error!("range expr missing start"))?,
+                )?;
+                let end = self.parse_expr(
+                    inner
+                        .next()
+                        .ok_or_else(|| parse_error!("range expr missing end"))?,
+                )?;
                 Ok(Expr::RangeLiteral {
                     start: Box::new(start),
                     end: Box::new(end),
@@ -220,11 +273,15 @@ impl Parser {
 
     fn parse_assign_expr(self, pair: Pair<Rule>) -> CompileResult<Expr> {
         let mut inner = pair.into_inner();
-        let left_pair = inner.next().unwrap();
+        let left_pair = inner
+            .next()
+            .ok_or_else(|| parse_error!("assign expr missing left operand"))?;
         let left = self.parse_expr(left_pair)?;
         if let Some(assign_op_pair) = inner.next() {
             let op = AssignmentOperator::from_rule_pair(&assign_op_pair)?;
-            let right_assign_expr_pair = inner.next().unwrap();
+            let right_assign_expr_pair = inner
+                .next()
+                .ok_or_else(|| parse_error!("assign expr missing right operand"))?;
             let right = self.parse_assign_expr(right_assign_expr_pair)?;
             Ok(Expr::Assign {
                 op,
@@ -239,7 +296,9 @@ impl Parser {
 
     fn parse_struct_init(self, pair: Pair<Rule>) -> CompileResult<Expr> {
         let mut inner = pair.into_inner();
-        let type_pair = inner.next().unwrap();
+        let type_pair = inner
+            .next()
+            .ok_or_else(|| parse_error!("struct init missing type name"))?;
         let struct_ty = self.parse_type(type_pair)?;
         let fields: Vec<FieldInit> = inner
             .filter(|p| p.as_rule() == Rule::field_init)
@@ -254,8 +313,16 @@ impl Parser {
 
     fn parse_field_init(self, pair: Pair<Rule>) -> CompileResult<FieldInit> {
         let mut inner = pair.into_inner();
-        let name = Self::pair_text(inner.next().unwrap());
-        let value = self.parse_expr(inner.next().unwrap())?;
+        let name = Self::pair_text(
+            inner
+                .next()
+                .ok_or_else(|| parse_error!("field init missing name"))?,
+        );
+        let value = self.parse_expr(
+            inner
+                .next()
+                .ok_or_else(|| parse_error!("field init missing value"))?,
+        )?;
         Ok(FieldInit { name, value })
     }
 

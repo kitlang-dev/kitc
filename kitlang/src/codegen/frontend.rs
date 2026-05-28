@@ -449,7 +449,7 @@ fn load_module_recursive(
     }
 
     if errors.len() == 1 {
-        return Err(errors.into_iter().next().unwrap());
+        return Err(errors.swap_remove(0));
     }
     if !errors.is_empty() {
         return Err(CompilationError::CompileError(format!(

@@ -63,11 +63,11 @@ where
     if let Some(search) = search_fn
         && let Some(toolchain_str) = search(path)
     {
-        return Toolchain::from_str(&toolchain_str).unwrap();
+        return Toolchain::from_str(&toolchain_str).expect("Infallible");
     }
 
     let exe = get_lowercase_exe(path).unwrap_or_default();
-    Toolchain::from_str(&exe).unwrap()
+    Toolchain::from_str(&exe).expect("Infallible")
 }
 
 impl Toolchain {

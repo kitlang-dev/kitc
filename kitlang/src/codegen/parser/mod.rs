@@ -440,7 +440,9 @@ impl Parser {
         // using_clause = { ("rules" ~ type_annotation) | ("implicit" ~ expr) }
         // The first alternative yields a `type_annotation` child, the second yields an `expr` child.
         let mut inner = pair.into_inner();
-        let child = inner.next().unwrap();
+        let child = inner
+            .next()
+            .ok_or_else(|| parse_error!("using clause is empty"))?;
         if child.as_rule() == Rule::type_annotation {
             Ok(UsingClause::RuleSet(self.parse_type(child)?))
         } else {
@@ -504,8 +506,14 @@ impl Parser {
     fn parse_param_field(self, pair: Pair<Rule>) -> CompileResult<Field> {
         // param = { identifier ~ ":" ~ type_annotation ~ ( "=" ~ expr )? }
         let mut inner = pair.into_inner();
-        let name = Self::pair_text(inner.next().unwrap());
-        let type_node = inner.next().unwrap();
+        let name = Self::pair_text(
+            inner
+                .next()
+                .ok_or_else(|| parse_error!("param field missing name"))?,
+        );
+        let type_node = inner
+            .next()
+            .ok_or_else(|| parse_error!("param field missing type annotation"))?;
         let ty_ann = self.parse_type(type_node)?;
 
         // Check for optional default expression
