@@ -13,15 +13,17 @@ pub struct EnumVariantInfo {
 
 /// Symbol table for tracking variable and function types during inference.
 ///
-/// Currently uses a flat scope (no nesting). Variables and functions are tracked
-/// by their names and their `TypeId`s.
+/// Uses a stack of scopes for proper lexical scoping. Variables declared inside
+/// blocks (if, while, for, etc.) are scoped to that block and invisible outside.
+/// Functions, globals, structs, and enums have module-level scope.
 #[derive(Default)]
 pub struct SymbolTable {
     /// Maps global variable names to their inferred `TypeId`s.
     globals: HashMap<String, TypeId>,
 
-    /// Maps local variable names to their inferred `TypeId`s.
-    vars: HashMap<String, TypeId>,
+    /// Stack of local variable scopes. Index 0 is the outermost (function-level) scope.
+    /// Each `push_scope` adds a new scope; `pop_scope` removes it.
+    vars: Vec<HashMap<String, TypeId>>,
 
     /// Maps function names to their signatures (parameter types, return type).
     functions: HashMap<String, (Vec<TypeId>, TypeId)>,
@@ -41,12 +43,28 @@ impl SymbolTable {
     pub fn new() -> Self {
         Self {
             globals: HashMap::new(),
-            vars: HashMap::new(),
+            vars: vec![HashMap::new()],
             functions: HashMap::new(),
             structs: HashMap::new(),
             enums: HashMap::new(),
             enum_variants: HashMap::new(),
         }
+    }
+
+    /// Push a new lexical scope for variable declarations.
+    pub fn push_scope(&mut self) {
+        self.vars.push(HashMap::new());
+    }
+
+    /// Pop the current lexical scope, discarding all variables declared in it.
+    /// # Panics
+    /// Panics if there is only one scope (the outermost function scope).
+    pub fn pop_scope(&mut self) {
+        debug_assert!(
+            self.vars.len() > 1,
+            "pop_scope called with only one scope remaining",
+        );
+        self.vars.pop();
     }
 
     /// Define a global variable in the symbol table.
@@ -59,14 +77,21 @@ impl SymbolTable {
         self.globals.get(name).copied()
     }
 
-    /// Define a variable in the current scope.
+    /// Define a variable in the current (innermost) scope.
     pub fn define_var(&mut self, name: &str, ty: TypeId) {
-        self.vars.insert(name.to_string(), ty);
+        if let Some(scope) = self.vars.last_mut() {
+            scope.insert(name.to_string(), ty);
+        }
     }
 
-    /// Look up a variable's type.
+    /// Look up a variable's type by searching scopes from innermost to outermost.
     pub fn lookup_var(&self, name: &str) -> Option<TypeId> {
-        self.vars.get(name).copied()
+        for scope in self.vars.iter().rev() {
+            if let Some(ty) = scope.get(name) {
+                return Some(*ty);
+            }
+        }
+        None
     }
 
     /// Define a function signature.

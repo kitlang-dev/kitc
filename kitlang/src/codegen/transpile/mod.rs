@@ -60,6 +60,7 @@ fn visit_program_types(inferencer: &TypeInferencer, prog: &Program, mut f: impl 
         } else if let Some(ref r) = func.return_type {
             f(r);
         }
+
         for p in &func.params {
             if let Ok(ty) = inferencer.store.resolve(p.ty) {
                 f(&ty);
@@ -67,6 +68,7 @@ fn visit_program_types(inferencer: &TypeInferencer, prog: &Program, mut f: impl 
                 f(ann);
             }
         }
+
         for stmt in &func.body.stmts {
             if let Stmt::VarDecl { inferred, .. } = stmt
                 && let Ok(ty) = inferencer.store.resolve(*inferred)
@@ -400,7 +402,12 @@ impl Compiler {
                     name.clone()
                 }
             }
-            Expr::Literal { value: lit, .. } => lit.to_c(),
+            Expr::Literal { value: lit, ty, .. } => {
+                let is_c_float = self.inferencer.store.resolve(*ty).is_ok_and(|t| {
+                    matches!(t, Type::Float) // only C float gets the suffix, double does not
+                });
+                lit.to_c_with_float(is_c_float)
+            }
             Expr::Call { callee, args, .. } => {
                 if let Some(info) = self
                     .inferencer
@@ -509,19 +516,26 @@ impl Compiler {
             } => {
                 let container = self.transpile_expr(expr);
                 let container_ty = Self::expr_type_id(expr);
-                if let Ok(Type::Named(type_name)) = self.inferencer.store.resolve(container_ty) {
-                    if let Some(enum_def) = self.inferencer.symbols().lookup_enum(&type_name) {
-                        if let Some(variant) = enum_def.variants.iter().find(|v| {
-                            !v.args.is_empty() && v.args.iter().any(|a| a.name == *field_name)
-                        }) {
-                            return format!(
-                                "{}._variant.{}.{}",
-                                container,
-                                variant.name.to_lowercase(),
-                                field_name
-                            );
-                        }
-                    }
+
+                // Try to resolve the inferred type of the container expression
+                if let Ok(Type::Named(type_name)) = self.inferencer.store.resolve(container_ty)
+                // We only care about named types (structs/enums), not primitives or generics
+                && let Some(enum_def) = self.inferencer.symbols().lookup_enum(&type_name)
+                // Ensure the named type is actually an enum in our symbol table
+                // and retrieve its definition
+                && let Some(variant) = enum_def.variants.iter().find(|v| {
+                    // Look for a variant that has at least one field/argument
+                    // and where any of those fields match the requested field name
+                    !v.args.is_empty() && v.args.iter().any(|a| a.name == *field_name)
+                }) {
+                    // If we found a matching enum variant + field, build a fully qualified access path:
+                    // container -> variant (lowercased) -> field
+                    return format!(
+                        "{}._variant.{}.{}",
+                        container,
+                        variant.name.to_lowercase(),
+                        field_name
+                    );
                 }
                 format!("{}.{}", container, field_name)
             }

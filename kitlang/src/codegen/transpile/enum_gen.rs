@@ -13,8 +13,13 @@ impl Compiler {
             .store
             .resolve(field.ty)
             .ok()
-            .or(field.annotation.clone())
-            .unwrap_or(Type::Void)
+            .or_else(|| field.annotation.clone())
+            .unwrap_or_else(|| {
+                panic!(
+                    "Field '{}' has no resolved type and no type annotation",
+                    field.name
+                )
+            })
     }
 
     /// Generate a C struct declaration from a Kit struct definition.

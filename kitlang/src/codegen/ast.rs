@@ -326,17 +326,26 @@ impl Attributed for GlobalDecl {
 
 impl Literal {
     /// Convert this literal to its C representation.
-    /// Handles float suffixes, string escaping, and NULL for null pointers.
+    /// Float literals always get the `f` suffix (assumes C `float` target).
+    /// For `Float64`/`double` targets, use `to_c_with_float(false)` instead.
     #[must_use]
     pub fn to_c(&self) -> String {
+        self.to_c_with_float(true)
+    }
+
+    /// Like `to_c()` but controls whether float literals get the `f` suffix.
+    /// - `is_c_float == true` (Float → C `float`): emit `3.14f`
+    /// - `is_c_float == false` (Float64 → C `double`): emit `3.14`
+    #[must_use]
+    pub fn to_c_with_float(&self, is_c_float: bool) -> String {
         match self {
             Literal::Int(i) => i.to_string(),
             Literal::Float(f) => {
-                // Ensure float literals have 'f' suffix in C
+                let suffix = if is_c_float { "f" } else { "" };
                 if f.fract() == 0.0 {
-                    format!("{f}.0f")
+                    format!("{f}.0{suffix}")
                 } else {
-                    format!("{f}f")
+                    format!("{f}{suffix}")
                 }
             }
             Literal::String(s) => {

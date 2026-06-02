@@ -8,6 +8,25 @@ use super::types::{BinaryOperator, Type, TypeId, TypeStore, UnaryOperator};
 use crate::error::{CompilationError, CompileResult};
 use crate::type_err;
 
+/// Set the `ty` field on any expression that has one (all except RangeLiteral).
+fn set_expr_type(expr: &mut Expr, ty: TypeId) -> &mut Expr {
+    match expr {
+        Expr::Identifier { ty: t, .. }
+        | Expr::Literal { ty: t, .. }
+        | Expr::Call { ty: t, .. }
+        | Expr::UnaryOp { ty: t, .. }
+        | Expr::BinaryOp { ty: t, .. }
+        | Expr::Assign { ty: t, .. }
+        | Expr::If { ty: t, .. }
+        | Expr::StructInit { ty: t, .. }
+        | Expr::FieldAccess { ty: t, .. }
+        | Expr::EnumVariant { ty: t, .. }
+        | Expr::EnumInit { ty: t, .. } => *t = ty,
+        Expr::RangeLiteral { .. } => {}
+    }
+    expr
+}
+
 /// Type inference engine using Hindley-Milner algorithm.
 #[derive(Default)]
 pub struct TypeInferencer {
@@ -59,6 +78,7 @@ impl TypeInferencer {
                 global.inferred = if let Some(ann) = &global.annotation {
                     let ann_ty = self.store.new_known(ann.clone());
                     self.unify(ann_ty, init_ty)?;
+                    set_expr_type(init_expr, ann_ty);
                     ann_ty
                 } else {
                     init_ty
@@ -138,6 +158,9 @@ impl TypeInferencer {
 
     /// Infer types for a function definition
     fn infer_function(&mut self, func: &mut Function) -> CompileResult<()> {
+        // Push a scope for function parameters and body
+        self.symbols.push_scope();
+
         // Infer parameter types (fresh unknowns if unannotated)
         for param in &mut func.params {
             param.ty = self.store.known_or_unknown(param.annotation.as_ref());
@@ -154,6 +177,10 @@ impl TypeInferencer {
 
         self.current_return_type = None;
 
+        // Pop function scope (discards params and local vars — they're no longer needed
+        // after inference since codegen uses the AST's TypeId fields directly)
+        self.symbols.pop_scope();
+
         // Register function signature in symbol table
         if let Some(ret_ty) = func.inferred_return {
             let param_tys: Vec<TypeId> = func.params.iter().map(|p| p.ty).collect();
@@ -165,9 +192,11 @@ impl TypeInferencer {
 
     /// Infer types for a block of statements
     fn infer_block(&mut self, block: &mut Block) -> CompileResult<()> {
+        self.symbols.push_scope();
         for stmt in &mut block.stmts {
             self.infer_stmt(stmt)?;
         }
+        self.symbols.pop_scope();
         Ok(())
     }
 
@@ -186,6 +215,7 @@ impl TypeInferencer {
                     *inferred = if let Some(ann) = annotation {
                         let ann_ty = self.store.new_known(ann.clone());
                         self.unify(ann_ty, init_ty)?;
+                        set_expr_type(init_expr, ann_ty);
                         ann_ty
                     } else {
                         init_ty
@@ -211,6 +241,7 @@ impl TypeInferencer {
                 let expr_ty = self.infer_expr(expr)?;
                 if let Some(ret_ty) = self.current_return_type {
                     self.unify(ret_ty, expr_ty)?;
+                    set_expr_type(expr, ret_ty);
                 } else {
                     return Err(type_err!("Return statement outside of function"));
                 }
@@ -404,13 +435,14 @@ impl TypeInferencer {
             ));
         }
 
-        let expected_types: Vec<_> = variant_info.arg_types.iter().copied().collect();
+        let expected_types: Vec<_> = variant_info.arg_types.to_vec();
         let enum_ty = self
             .store
             .new_known(Type::Named(variant_info.enum_name.clone()));
         for (arg, expected_ty) in resolved_args.iter_mut().zip(expected_types.iter()) {
             let arg_ty = self.infer_expr(arg)?;
             self.unify(arg_ty, *expected_ty)?;
+            set_expr_type(arg, *expected_ty);
         }
         *args = resolved_args;
         *ty = enum_ty;
@@ -445,6 +477,7 @@ impl TypeInferencer {
             for (arg, param_ty) in args.iter_mut().zip(param_tys.iter()) {
                 let arg_ty = self.infer_expr(arg)?;
                 self.unify(arg_ty, *param_ty)?;
+                set_expr_type(arg, *param_ty);
             }
         }
 
@@ -820,6 +853,7 @@ impl TypeInferencer {
         for (arg, &expected_ty) in args.iter_mut().zip(variant_info.arg_types.iter()) {
             let arg_ty = self.infer_expr(arg)?;
             self.unify(arg_ty, expected_ty)?;
+            set_expr_type(arg, expected_ty);
         }
 
         let enum_ty = self.store.new_known(Type::Named(enum_name.clone()));

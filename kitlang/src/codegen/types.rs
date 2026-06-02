@@ -241,9 +241,32 @@ impl TypeStore {
                 }
             }
 
+            // Numeric type promotion: allow mixed-width integer/float types to unify
+            _ if Self::is_numeric(a) && Self::is_numeric(b) => Ok(()),
+
             // Everything else is a type mismatch
             _ => Err(format!("Type mismatch: {a:?} vs {b:?}")),
         }
+    }
+
+    /// Check if a Type is a numeric type (integer or floating-point).
+    fn is_numeric(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Int8
+                | Type::Int16
+                | Type::Int32
+                | Type::Int64
+                | Type::Uint8
+                | Type::Uint16
+                | Type::Uint32
+                | Type::Uint64
+                | Type::Float32
+                | Type::Float64
+                | Type::Int
+                | Type::Float
+                | Type::Size
+        )
     }
 
     /// Helper to unify boxed Type values.
@@ -386,9 +409,8 @@ impl ToCRepr for Type {
             },
             Type::CArray(elem_type, size) => {
                 let elem_repr = elem_type.to_c_repr();
-                let size_str = size.to_string();
                 CRepr {
-                    name: format!("{}*{}", elem_repr.name, size_str),
+                    name: format!("{}[{}]", elem_repr.name, size),
                     declaration: None,
                     headers: elem_repr.headers,
                 }
