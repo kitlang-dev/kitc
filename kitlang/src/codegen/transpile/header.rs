@@ -65,64 +65,6 @@ fn filter_by_name<T: Clone>(
 }
 
 impl Compiler {
-    /// Generate C code from the merged program and write it to the flat output path.
-    pub(crate) fn transpile_with_program(&mut self, prog: &Program) -> CompileResult<()> {
-        let c_code = self.generate_flat_c_code(prog);
-        fs::write(&self.c_output, c_code).map_err(CompilationError::Io)
-    }
-
-    /// Generate C code for a single merged/entry program (flat, no module awareness).
-    pub(super) fn generate_flat_c_code(&self, prog: &Program) -> String {
-        let mut out = String::new();
-
-        let mut all_c_includes = HashSet::new();
-        for module in self.registry.all_modules() {
-            for inc in &module.includes {
-                all_c_includes.insert(inc.path.clone());
-            }
-        }
-        for path in &all_c_includes {
-            let _ = writeln!(out, "#include \"{}\"", path);
-        }
-        if !all_c_includes.is_empty() {
-            out.push('\n');
-        }
-
-        let (seen_headers, seen_declarations) =
-            collect_type_headers_and_decls(&self.inferencer, prog);
-
-        for hdr in &seen_headers {
-            let _ = writeln!(out, "#include {hdr}");
-        }
-        out.push('\n');
-
-        for decl in &seen_declarations {
-            out.push_str(decl);
-            out.push('\n');
-        }
-
-        for struct_def in &prog.structs {
-            out.push_str(&self.generate_struct_declaration(struct_def, &prog.structs));
-            out.push('\n');
-        }
-
-        for enum_def in &prog.enums {
-            out.push_str(&self.generate_enum_declaration(enum_def));
-            out.push('\n');
-        }
-
-        for global in &prog.globals {
-            out.push_str(&self.transpile_global(global));
-            out.push('\n');
-        }
-
-        for func in &prog.functions {
-            out.push_str(&self.transpile_function(func));
-            out.push_str("\n\n");
-        }
-        out
-    }
-
     /// Generate per-module `.c` and `.h` files, returning paths to all `.c` files.
     pub(crate) fn generate_per_module_files(
         &mut self,

@@ -297,7 +297,6 @@ impl Compiler {
         if env::var("KEEP_H").is_err() {
             self.cleanup_build_dir();
         }
-        let _ = fs::remove_file(&self.c_output);
     }
 
     fn cleanup_build_dir(&self) {

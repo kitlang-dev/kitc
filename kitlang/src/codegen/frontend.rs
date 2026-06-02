@@ -23,7 +23,6 @@ use crate::{KitParser, Rule, error::CompilationError};
 pub struct Compiler {
     pub(crate) files: Vec<PathBuf>,
     pub(crate) output: PathBuf,
-    pub(crate) c_output: PathBuf,
     pub(crate) build_dir: PathBuf,
     pub(crate) libs: Vec<String>,
     pub(crate) source_paths: Vec<(PathBuf, ModulePath)>,
@@ -542,7 +541,6 @@ impl Compiler {
         parsed_source_paths.extend(Self::get_stdlib_paths());
 
         let output_path = output.as_ref().to_path_buf();
-        let c_output = output_path.with_extension("c");
 
         let build_dir = {
             let mut dir = output_path.parent().unwrap_or(Path::new(".")).to_path_buf();
@@ -557,7 +555,6 @@ impl Compiler {
         Self {
             files,
             output: output_path,
-            c_output,
             build_dir,
             libs,
             source_paths: parsed_source_paths,
@@ -610,15 +607,6 @@ impl Compiler {
                 }
             }
         }
-
-        self.current_module = ModulePath::new();
-
-        // HACK: infer_program runs twice on the same inferencer.
-        // First inside generate_per_module_files, then here for flat output.
-        // FIXME: reset inferencer or skip the redundant flat path entirely.
-        let mut merged = merge_modules_for_inference(&self.registry, &sorted_paths);
-        self.inferencer.infer_program(&mut merged)?;
-        self.transpile_with_program(&merged)?;
 
         let target_path = self
             .output
