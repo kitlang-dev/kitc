@@ -14,6 +14,7 @@ use crate::codegen::{
     inference::TypeInferencer,
     module::{ImportType, Module, ModuleImport, ModulePath, ModuleRegistry},
     parser::Parser as CodeParser,
+    transpile::{self, CodegenCtx},
     type_ast::UsingClause,
 };
 use crate::error::CompileResult;
@@ -27,7 +28,6 @@ pub struct Compiler {
     pub(crate) libs: Vec<String>,
     pub(crate) source_paths: Vec<(PathBuf, ModulePath)>,
     pub(crate) inferencer: TypeInferencer,
-    pub(crate) current_module: ModulePath,
     pub(crate) registry: ModuleRegistry,
 }
 
@@ -559,7 +559,6 @@ impl Compiler {
             libs,
             source_paths: parsed_source_paths,
             inferencer: TypeInferencer::new(),
-            current_module: ModulePath::new(),
             registry: ModuleRegistry::new(),
         }
     }
@@ -589,13 +588,23 @@ impl Compiler {
     ///
     /// The compilation pipeline:
     /// 1. Build the module dependency graph
-    /// 2. Generate per-module `.c` and `.h` files
-    /// 3. Generate a merged flat `.c` file for backward compatibility
+    /// 2. Type inference on the merged program
+    /// 3. Generate per-module `.c` and `.h` files
     /// 4. Invoke the system C compiler to link everything into an executable
     pub fn compile(&mut self) -> CompileResult<()> {
         let sorted_paths = self.build_module_graph()?;
 
-        let module_c_files = self.generate_per_module_files(&sorted_paths)?;
+        // Single inference pass (codegen borrows results read-only)
+        let mut merged = merge_modules_for_inference(&self.registry, &sorted_paths);
+        self.inferencer.infer_program(&mut merged)?;
+
+        let mut ctx = CodegenCtx {
+            inferencer: &self.inferencer,
+            registry: &self.registry,
+            current_module: ModulePath::new(),
+            build_dir: &self.build_dir,
+        };
+        let module_c_files = ctx.generate_per_module_files(&sorted_paths, &merged)?;
 
         // Collect linked library names from include statements
         for module in self.registry.all_modules() {
@@ -652,7 +661,7 @@ impl Compiler {
             return Err(CompilationError::CCompileError(output.stderr));
         }
 
-        self.cleanup_intermediate_files(&module_c_files);
+        transpile::cleanup_intermediate_files(&module_c_files, &self.build_dir);
 
         Ok(())
     }

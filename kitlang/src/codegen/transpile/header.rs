@@ -4,12 +4,12 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::codegen::ast::{Attributed, Program};
-use crate::codegen::frontend::{Compiler, merge_modules_for_inference};
 use crate::codegen::module::{Module, ModulePath};
 use crate::codegen::name_mangling::mangle_name;
 use crate::codegen::types::ToCRepr;
 use crate::error::{CompilationError, CompileResult};
 
+use super::CodegenCtx;
 use super::collect_type_headers_and_decls;
 
 /// Pre-collected name sets for a module's declarations.
@@ -64,19 +64,16 @@ fn filter_by_name<T: Clone>(
         .collect()
 }
 
-impl Compiler {
+impl CodegenCtx<'_> {
     /// Generate per-module `.c` and `.h` files, returning paths to all `.c` files.
     pub(crate) fn generate_per_module_files(
         &mut self,
         sorted_paths: &[ModulePath],
+        merged: &Program,
     ) -> CompileResult<Vec<PathBuf>> {
-        fs::create_dir_all(&self.build_dir).map_err(CompilationError::Io)?;
+        fs::create_dir_all(self.build_dir).map_err(CompilationError::Io)?;
 
         let mut c_files = Vec::new();
-        let saved_module = self.current_module.clone();
-
-        let mut merged = merge_modules_for_inference(&self.registry, sorted_paths);
-        self.inferencer.infer_program(&mut merged)?;
 
         for path in sorted_paths {
             self.current_module = path.clone();
@@ -108,7 +105,6 @@ impl Compiler {
             }
         }
 
-        self.current_module = saved_module;
         Ok(c_files)
     }
 
@@ -124,7 +120,7 @@ impl Compiler {
         let _ = writeln!(out, "#define {}", guard);
         out.push('\n');
 
-        let seen_headers = collect_type_headers_and_decls(&self.inferencer, prog).0;
+        let seen_headers = collect_type_headers_and_decls(self.inferencer, prog).0;
         for hdr in &seen_headers {
             let _ = writeln!(out, "#include {hdr}");
         }
@@ -204,7 +200,7 @@ impl Compiler {
         }
         out.push('\n');
 
-        let (seen_headers, _) = collect_type_headers_and_decls(&self.inferencer, prog);
+        let (seen_headers, _) = collect_type_headers_and_decls(self.inferencer, prog);
         for hdr in &seen_headers {
             let _ = writeln!(out, "#include {hdr}");
         }

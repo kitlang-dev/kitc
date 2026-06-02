@@ -1,5 +1,5 @@
-use crate::error::CompilationError;
 use crate::Rule;
+use crate::error::CompilationError;
 
 use pest::iterators::Pair;
 use strum::{EnumString, IntoStaticStr};

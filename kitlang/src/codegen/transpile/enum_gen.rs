@@ -1,13 +1,14 @@
 use std::fmt::Write;
 
 use crate::codegen::ast::Attributed;
-use crate::codegen::frontend::Compiler;
 use crate::codegen::module::ModulePath;
 use crate::codegen::name_mangling::{mangle_enum_variant, mangle_name};
 use crate::codegen::type_ast::{EnumDefinition, EnumVariant, Field, StructDefinition};
 use crate::codegen::types::{ToCRepr, Type};
 
-impl Compiler {
+use super::CodegenCtx;
+
+impl CodegenCtx<'_> {
     fn resolve_field_type(&self, field: &Field) -> Type {
         self.inferencer
             .store

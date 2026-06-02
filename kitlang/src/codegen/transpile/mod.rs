@@ -7,13 +7,21 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::codegen::ast::{Attributed, Block, Expr, Function, GlobalDecl, Program, Stmt};
-use crate::codegen::frontend::Compiler;
-use crate::codegen::module::ModulePath;
+use crate::codegen::module::{ModulePath, ModuleRegistry};
 use crate::codegen::name_mangling::{mangle_enum_variant, mangle_name};
 use crate::codegen::types::{ToCRepr, Type, TypeId};
 
 use super::ast::Param;
 use super::inference::TypeInferencer;
+
+/// Context for C code generation, borrowing inference results and module registry.
+/// Constructed after type inference completes — all methods are read-only on analysis data.
+pub(crate) struct CodegenCtx<'a> {
+    pub(crate) inferencer: &'a TypeInferencer,
+    pub(crate) registry: &'a ModuleRegistry,
+    pub(crate) current_module: ModulePath,
+    pub(crate) build_dir: &'a std::path::PathBuf,
+}
 
 /// Check if a declaration in the given module field is marked #[extern] or #[expose].
 macro_rules! has_no_mangle_in_module {
@@ -100,7 +108,7 @@ pub(super) fn collect_type_headers_and_decls(
     (headers, decls)
 }
 
-impl Compiler {
+impl CodegenCtx<'_> {
     fn expr_type_id(expr: &Expr) -> TypeId {
         match expr {
             Expr::Identifier { ty, .. }
@@ -284,36 +292,6 @@ impl Compiler {
             .iter()
             .find(|m| m.program.globals.iter().any(|g| g.name == name))
             .map(|m| m.path.clone())
-    }
-
-    /// Remove intermediate `.c` and `.h` files from the build directory.
-    pub(crate) fn cleanup_intermediate_files(&self, module_c_files: &[PathBuf]) {
-        if env::var("KEEP_C").is_ok() {
-            return;
-        }
-        for c_file in module_c_files {
-            let _ = fs::remove_file(c_file);
-        }
-        if env::var("KEEP_H").is_err() {
-            self.cleanup_build_dir();
-        }
-    }
-
-    fn cleanup_build_dir(&self) {
-        let Ok(entries) = fs::read_dir(&self.build_dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let is_intermediate = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e == "h" || e == "c");
-            if is_intermediate {
-                let _ = fs::remove_file(&path);
-            }
-        }
-        let _ = fs::remove_dir(&self.build_dir);
     }
 
     fn transpile_enum_args_with_defaults(
@@ -571,4 +549,34 @@ impl Compiler {
             }
         }
     }
+}
+
+/// Remove intermediate `.c` and `.h` files from the build directory.
+pub(crate) fn cleanup_intermediate_files(module_c_files: &[PathBuf], build_dir: &PathBuf) {
+    if env::var("KEEP_C").is_ok() {
+        return;
+    }
+    for c_file in module_c_files {
+        let _ = fs::remove_file(c_file);
+    }
+    if env::var("KEEP_H").is_err() {
+        cleanup_build_dir(build_dir);
+    }
+}
+
+fn cleanup_build_dir(build_dir: &PathBuf) {
+    let Ok(entries) = fs::read_dir(build_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_intermediate = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e == "h" || e == "c");
+        if is_intermediate {
+            let _ = fs::remove_file(&path);
+        }
+    }
+    let _ = fs::remove_dir(build_dir);
 }
