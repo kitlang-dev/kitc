@@ -334,8 +334,8 @@ impl Literal {
     }
 
     /// Like `to_c()` but controls whether float literals get the `f` suffix.
-    /// - `is_c_float == true` (Float → C `float`): emit `3.14f`
-    /// - `is_c_float == false` (Float64 → C `double`): emit `3.14`
+    /// - `is_c_float == true` (Float -> C `float`): emit `3.14f`
+    /// - `is_c_float == false` (Float64 -> C `double`): emit `3.14`
     #[must_use]
     pub fn to_c_with_float(&self, is_c_float: bool) -> String {
         match self {

@@ -613,6 +613,9 @@ impl Compiler {
 
         self.current_module = ModulePath::new();
 
+        // HACK: infer_program runs twice on the same inferencer.
+        // First inside generate_per_module_files, then here for flat output.
+        // FIXME: reset inferencer or skip the redundant flat path entirely.
         let mut merged = merge_modules_for_inference(&self.registry, &sorted_paths);
         self.inferencer.infer_program(&mut merged)?;
         self.transpile_with_program(&merged)?;

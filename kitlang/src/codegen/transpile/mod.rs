@@ -276,6 +276,8 @@ impl Compiler {
             .resolve_qualified_name(name, &self.current_module)
     }
 
+    // XXX: searches ALL modules, ignores import visibility.
+    // Works for flat codegen; per-module mode relies on C linker to catch mismatches.
     fn find_global_module(&self, name: &str) -> Option<ModulePath> {
         self.registry
             .all_modules()
@@ -381,6 +383,7 @@ impl Compiler {
         if is_simple {
             mangle_enum_variant(&self.current_module, enum_name, variant_name)
         } else {
+            // HACK: {0} zero-initializes the entire union - valid C99 for any type.
             format!(
                 "{{.{} = {}, ._variant = {{0}}}}",
                 "_discriminant",
@@ -426,6 +429,7 @@ impl Compiler {
                     );
                     format!("{}_new({})", ctor, a)
                 } else {
+                    // XXX: name resolution cascade - qualified name -> module-scoped -> bare (C interop)
                     let (mod_path, base_name) =
                         if let Some((mp, bn)) = self.resolve_function_name(callee) {
                             (Some(mp), bn)
@@ -433,6 +437,12 @@ impl Compiler {
                             let last = callee.rsplit('.').next().unwrap_or(callee);
                             (None, last.to_string())
                         };
+
+                    // XXX: 5-condition mangling ladder:
+                    // 1. main is never mangled
+                    // 2. extern/expose items skip mangling
+                    // 3. known functions in non-empty module get module prefix
+                    // 4. everything else passes through as-is (C interop)
                     let mangled = if callee == "main" {
                         callee.clone()
                     } else if let Some(mp) = mod_path {

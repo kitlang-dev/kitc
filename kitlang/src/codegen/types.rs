@@ -1,5 +1,5 @@
-use crate::Rule;
 use crate::error::CompilationError;
+use crate::Rule;
 
 use pest::iterators::Pair;
 use strum::{EnumString, IntoStaticStr};
@@ -269,7 +269,9 @@ impl TypeStore {
         )
     }
 
-    /// Helper to unify boxed Type values.
+    // HACK: creates orphan TypeIds that bloat the store.
+    // Inner types stored by-value in Type enum (Ptr, Tuple, CArray) cannot
+    // participate in unification - this check is one-shot only.
     fn unify_type_ids(&mut self, a: Type, b: Type) -> Result<(), String> {
         let a_id = self.new_known(a);
         let b_id = self.new_known(b);
@@ -320,9 +322,7 @@ pub enum Type {
     CString,
     /// Tuple type (represented as a struct in C).
     Tuple(Vec<Type>),
-    /// C array type (TODO: is this variable length or fixed length?).
-    ///
-    /// ...
+    /// Fixed-length C array. `CArray(Int, 5)` -> `int[5]`. Size `0` = unsized (`int[]`).
     CArray(Box<Type>, usize),
     /// Represents a void type (e.g., for functions with no return value).
     Void,

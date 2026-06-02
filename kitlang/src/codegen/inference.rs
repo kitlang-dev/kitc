@@ -177,7 +177,7 @@ impl TypeInferencer {
 
         self.current_return_type = None;
 
-        // Pop function scope (discards params and local vars — they're no longer needed
+        // Pop function scope (discards params and local vars - they're no longer needed
         // after inference since codegen uses the AST's TypeId fields directly)
         self.symbols.pop_scope();
 
@@ -283,8 +283,9 @@ impl TypeInferencer {
             Stmt::For { var, iter, body } => {
                 let iter_ty = self.infer_expr(iter)?;
 
-                // For i in N: iter should be Int-like OR a range (which we currently typed as Void)
-                // TODO: Better range typing
+                // NOTE: RangeLiteral is typed as Void (see infer_range_literal),
+                // so this accepts both integer-count and range-based for-loops.
+                // TODO: Give ranges a proper type instead of piggybacking on Void.
                 let iter_resolved = self
                     .store
                     .resolve(iter_ty)
@@ -361,6 +362,8 @@ impl TypeInferencer {
             };
             Ok(enum_ty)
         } else {
+            // NOTE: fallback - enumerates ALL enums to resolve bare variant names (e.g. `Red`)
+            // since earlier paths only find qualified names ("Color.Red") or variables/globals.
             let mut found = None;
             for enum_def in self.symbols.get_enums() {
                 for variant in &enum_def.variants {
@@ -636,6 +639,7 @@ impl TypeInferencer {
             return Err(type_err!("StructInit missing type annotation"));
         };
 
+        // resolve struct type from annotation
         let struct_def = {
             let resolved = self
                 .store
@@ -654,6 +658,7 @@ impl TypeInferencer {
             }
         };
 
+        // validate provided field names + check required fields
         let provided_field_names: HashSet<String> = fields.iter().map(|f| f.name.clone()).collect();
 
         for field_init in fields.iter() {
@@ -684,6 +689,7 @@ impl TypeInferencer {
 
         let _ = struct_def;
 
+        // inject default values for missing optional fields
         for field_info in &field_infos {
             let field_name = &field_info.0;
             if !provided_field_names.contains(field_name)
@@ -696,6 +702,7 @@ impl TypeInferencer {
             }
         }
 
+        // infer and unify each field value against its declared type
         for field_init in fields.iter_mut() {
             let field_info = field_infos
                 .iter()

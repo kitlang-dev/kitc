@@ -89,6 +89,13 @@ impl Compiler {
         );
     }
 
+    // Generates tagged union layout:
+    //   typedef enum { ... } E_Discriminant;
+    //   typedef struct { ... } E_VariantA_data;
+    //   typedef struct {
+    //       E_Discriminant _discriminant;
+    //       union { E_VariantA_data varianta; ... } _variant;
+    //   } E;
     fn write_complex_enum(
         &self,
         output: &mut String,
