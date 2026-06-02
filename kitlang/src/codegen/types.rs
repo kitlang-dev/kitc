@@ -203,11 +203,6 @@ impl TypeStore {
             return Ok(());
         }
 
-        // Special-case type coercion: Int <-> Bool
-        if matches!((a, b), (Type::Int, Type::Bool) | (Type::Bool, Type::Int)) {
-            return Ok(());
-        }
-
         match (a, b) {
             // Pointer types: unify inner types
             (Type::Ptr(t1), Type::Ptr(t2)) => self.unify_type_ids((**t1).clone(), (**t2).clone()),

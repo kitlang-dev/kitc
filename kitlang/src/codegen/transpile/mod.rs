@@ -99,6 +99,23 @@ pub(super) fn collect_type_headers_and_decls(
 }
 
 impl Compiler {
+    fn expr_type_id(expr: &Expr) -> TypeId {
+        match expr {
+            Expr::Identifier { ty, .. }
+            | Expr::Literal { ty, .. }
+            | Expr::Call { ty, .. }
+            | Expr::UnaryOp { ty, .. }
+            | Expr::BinaryOp { ty, .. }
+            | Expr::Assign { ty, .. }
+            | Expr::If { ty, .. }
+            | Expr::StructInit { ty, .. }
+            | Expr::FieldAccess { ty, .. }
+            | Expr::EnumVariant { ty, .. }
+            | Expr::EnumInit { ty, .. } => *ty,
+            Expr::RangeLiteral { .. } => TypeId::default(),
+        }
+    }
+
     fn resolve_type_to_c_name(&self, type_id: TypeId, fallback: &str) -> String {
         debug_assert!(
             type_id != TypeId::default(),
@@ -490,7 +507,23 @@ impl Compiler {
             Expr::FieldAccess {
                 expr, field_name, ..
             } => {
-                format!("{}.{}", self.transpile_expr(expr), field_name)
+                let container = self.transpile_expr(expr);
+                let container_ty = Self::expr_type_id(expr);
+                if let Ok(Type::Named(type_name)) = self.inferencer.store.resolve(container_ty) {
+                    if let Some(enum_def) = self.inferencer.symbols().lookup_enum(&type_name) {
+                        if let Some(variant) = enum_def.variants.iter().find(|v| {
+                            !v.args.is_empty() && v.args.iter().any(|a| a.name == *field_name)
+                        }) {
+                            return format!(
+                                "{}._variant.{}.{}",
+                                container,
+                                variant.name.to_lowercase(),
+                                field_name
+                            );
+                        }
+                    }
+                }
+                format!("{}.{}", container, field_name)
             }
             Expr::EnumInit {
                 enum_name,

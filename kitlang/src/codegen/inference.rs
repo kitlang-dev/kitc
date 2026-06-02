@@ -84,7 +84,11 @@ impl TypeInferencer {
         for enum_def in enums {
             self.symbols.define_enum(enum_def.clone());
             for variant in &enum_def.variants {
-                self.symbols.define_enum_variant(variant);
+                let mut resolved_variant = variant.clone();
+                for arg in &mut resolved_variant.args {
+                    arg.ty = self.store.known_or_unknown(arg.annotation.as_ref());
+                }
+                self.symbols.define_enum_variant(&resolved_variant);
             }
         }
     }
@@ -390,13 +394,25 @@ impl TypeInferencer {
         } else {
             args_clone
         };
-        args.clone_from(&resolved_args);
+
+        if resolved_args.len() != variant_info.arg_types.len() {
+            return Err(type_err!(
+                "Enum variant '{}' expects {} arguments, got {}",
+                variant_info.variant_name,
+                variant_info.arg_types.len(),
+                resolved_args.len()
+            ));
+        }
+
+        let expected_types: Vec<_> = variant_info.arg_types.iter().copied().collect();
         let enum_ty = self
             .store
             .new_known(Type::Named(variant_info.enum_name.clone()));
-        for arg in &mut resolved_args {
-            self.infer_expr(arg)?;
+        for (arg, expected_ty) in resolved_args.iter_mut().zip(expected_types.iter()) {
+            let arg_ty = self.infer_expr(arg)?;
+            self.unify(arg_ty, *expected_ty)?;
         }
+        *args = resolved_args;
         *ty = enum_ty;
         Ok(enum_ty)
     }
@@ -698,7 +714,10 @@ impl TypeInferencer {
                         .collect();
                     (type_name, fields)
                 } else if let Some(enum_def) = self.symbols.lookup_enum(&type_name) {
-                    if let Some(variant) = enum_def.variants.iter().find(|v| v.name == *field_name)
+                    if let Some(variant) = enum_def
+                        .variants
+                        .iter()
+                        .find(|v| v.args.iter().any(|a| a.name == *field_name))
                     {
                         let fields: Vec<(String, TypeId)> = variant
                             .args
@@ -708,7 +727,7 @@ impl TypeInferencer {
                         (type_name, fields)
                     } else {
                         return Err(type_err!(
-                            "Enum '{}' has no variant '{}'",
+                            "Enum '{}' has no field '{}'",
                             type_name,
                             field_name
                         ));
@@ -833,10 +852,8 @@ impl TypeInferencer {
                 })?;
 
             let provided_len = result.len();
-            for i in (0..total_required).rev() {
-                if i >= provided_len
-                    && let Some(default_expr) = variant.args.get(i).and_then(|f| f.default.as_ref())
-                {
+            for i in provided_len..total_required {
+                if let Some(default_expr) = variant.args.get(i).and_then(|f| f.default.as_ref()) {
                     result.push(default_expr.clone());
                 }
             }

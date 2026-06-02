@@ -7,13 +7,11 @@ enum TestEnum {
 }
 
 function main() {
-    // Test partial instantiation
-    var e1 = WithDefault(10);  // Should use b=100
-    var e2 = WithTwoDefaults(1.5);  // Should use y=2.5, z=42
-    var e3 = WithTwoDefaults(1.5, 3.0);  // Should use z=42
+    var e1 = WithDefault(10);
+    var e2 = WithTwoDefaults(1.5);
+    var e3 = WithTwoDefaults(1.5, 3.0);
 
-    printf("Partial constructors work!\n");
-    printf("e1.a = %i, e1.b = %i\n", 10, 100);
-    printf("e2.x = %f, e2.y = %f, e2.z = %i\n", 1.5, 2.5, 42);
-    printf("e3.x = %f, e3.y = %f, e3.z = %i\n", 1.5, 3.0, 42);
+    printf("e1.a = %i, e1.b = %i\n", e1.a, e1.b);
+    printf("e2.x = %f, e2.y = %f, e2.z = %i\n", e2.x, e2.y, e2.z);
+    printf("e3.x = %f, e3.y = %f, e3.z = %i\n", e3.x, e3.y, e3.z);
 }
