@@ -4,11 +4,6 @@
 /// AST types, module system, parser, code generation, and type infrastructure.
 pub mod codegen;
 
-/// Logos-based lexer for tokenization of Kit source files.
-pub mod lexer;
-
-pub use logos;
-
 pub use codegen::Toolchain;
 
 /// The Kit language grammar, generated from a pest grammar file.
