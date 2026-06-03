@@ -369,3 +369,13 @@ fn test_qualified_call() -> Result<(), Box<dyn std::error::Error>> {
 fn test_extern_demo() -> Result<(), Box<dyn std::error::Error>> {
     run_example_test("extern_demo", None)
 }
+
+#[test]
+fn test_char_literals() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test("char_literals", None)
+}
+
+#[test]
+fn test_typedef() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test("typedef_test", None)
+}

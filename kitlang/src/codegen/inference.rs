@@ -59,6 +59,7 @@ impl TypeInferencer {
     pub fn infer_program(&mut self, prog: &mut Program) -> CompileResult<()> {
         self.register_enum_types(&prog.enums);
         self.register_struct_types(&prog.structs);
+        self.register_typedefs(&prog.typedefs);
 
         // Infer global variable types first (before functions)
         self.infer_globals(&mut prog.globals)?;
@@ -153,6 +154,14 @@ impl TypeInferencer {
 
             // Register updated struct in symbol table for field lookups
             self.symbols.define_struct(updated_struct_def);
+        }
+    }
+
+    /// Register typedef aliases in the type store so they can be resolved during unification.
+    fn register_typedefs(&mut self, typedefs: &[super::type_ast::TypeDef]) {
+        for td in typedefs {
+            self.store
+                .register_typedef(td.name.clone(), td.type_def.clone());
         }
     }
 
@@ -404,6 +413,7 @@ impl TypeInferencer {
         let ty = match lit {
             Literal::Int(_) => Type::Int,
             Literal::Float(_) => Type::Float,
+            Literal::Char(_) => Type::Char,
             Literal::Bool(_) => Type::Bool,
             Literal::String(_) => Type::CString,
             Literal::Null => Type::Ptr(Box::new(Type::Void)),

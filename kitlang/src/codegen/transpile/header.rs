@@ -18,6 +18,7 @@ struct NameSets {
     globals: HashSet<String>,
     structs: HashSet<String>,
     enums: HashSet<String>,
+    typedefs: HashSet<String>,
 }
 
 impl NameSets {
@@ -46,6 +47,12 @@ impl NameSets {
                 .enums
                 .iter()
                 .map(|e| e.name.clone())
+                .collect(),
+            typedefs: module
+                .program
+                .typedefs
+                .iter()
+                .map(|t| t.name.clone())
                 .collect(),
         }
     }
@@ -89,7 +96,7 @@ impl CodegenCtx<'_> {
                     traits: vec![],
                     impls: vec![],
                     rulesets: vec![],
-                    typedefs: vec![],
+                    typedefs: filter_by_name(&merged.typedefs, &names.typedefs, |t| &t.name),
                 };
 
                 let header = self.generate_module_header_from_program(&filtered, module);
@@ -143,6 +150,14 @@ impl CodegenCtx<'_> {
 
         for enum_def in &prog.enums {
             out.push_str(&self.generate_enum_declaration(enum_def));
+            out.push('\n');
+        }
+
+        for td in &prog.typedefs {
+            let underlying = td.type_def.to_c_repr();
+            let _ = writeln!(out, "typedef {} {};", underlying.name, td.name);
+        }
+        if !prog.typedefs.is_empty() {
             out.push('\n');
         }
 

@@ -480,6 +480,7 @@ pub(crate) fn merge_modules_for_inference(
                 .extend(module.program.functions.iter().cloned());
             merged.structs.extend(module.program.structs.clone());
             merged.enums.extend(module.program.enums.clone());
+            merged.typedefs.extend(module.program.typedefs.clone());
         }
     }
 

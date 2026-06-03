@@ -15,12 +15,12 @@ use super::ast::Param;
 use super::inference::TypeInferencer;
 
 /// Context for C code generation, borrowing inference results and module registry.
-/// Constructed after type inference completes — all methods are read-only on analysis data.
+/// Constructed after type inference completes - all methods are read-only on analysis data.
 pub(crate) struct CodegenCtx<'a> {
     pub(crate) inferencer: &'a TypeInferencer,
     pub(crate) registry: &'a ModuleRegistry,
     pub(crate) current_module: ModulePath,
-    pub(crate) build_dir: &'a std::path::PathBuf,
+    pub(crate) build_dir: &'a PathBuf,
 }
 
 /// Check if a declaration in the given module field is marked #[extern] or #[expose].
@@ -85,6 +85,10 @@ fn visit_program_types(inferencer: &TypeInferencer, prog: &Program, mut f: impl 
             }
         }
     }
+
+    for tdef in &prog.typedefs {
+        f(&tdef.type_def);
+    }
 }
 
 /// Collect type headers plus any C typedef declarations needed.
@@ -138,7 +142,13 @@ impl CodegenCtx<'_> {
     }
 
     fn type_to_c_name(&self, t: &Type) -> String {
-        self.type_to_c_name_with_module(t, &self.current_module)
+        // Resolve typedef aliases so variables use the underlying C type name
+        let resolved = self
+            .inferencer
+            .store
+            .resolve_typedef_type(t)
+            .unwrap_or_else(|| t.clone());
+        self.type_to_c_name_with_module(&resolved, &self.current_module)
     }
 
     fn type_to_c_name_with_module(&self, t: &Type, module: &ModulePath) -> String {

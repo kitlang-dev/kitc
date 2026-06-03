@@ -291,6 +291,8 @@ pub enum Literal {
     Int(i64),
     /// Floating-point literal.
     Float(f64),
+    /// Character literal (single ASCII character).
+    Char(char),
     /// String literal (without quotes).
     String(String),
     /// Boolean literal.
@@ -325,10 +327,24 @@ impl Attributed for GlobalDecl {
 }
 
 impl Literal {
-    /// Convert this literal to its C representation.
-    /// Float literals always get the `f` suffix (assumes C `float` target).
-    /// For `Float64`/`double` targets, use `to_c_with_float(false)` instead.
+    /// Escape a character for use in a C char or string literal.
+    fn escape_char(c: char) -> String {
+        match c {
+            '\n' => "\\n".to_string(),
+            '\r' => "\\r".to_string(),
+            '\t' => "\\t".to_string(),
+            '\\' => "\\\\".to_string(),
+            '\'' => "\\'".to_string(),
+            '"' => "\\\"".to_string(),
+            c => c.to_string(),
+        }
+    }
+
     #[must_use]
+    /// Convert this literal to its C representation.
+    ///
+    /// Float literals always get the `f` suffix (assumes `float` target).
+    /// For `Float64`/`double` targets, use [`to_c_with_float()`] with false instead.
     pub fn to_c(&self) -> String {
         self.to_c_with_float(true)
     }
@@ -348,6 +364,7 @@ impl Literal {
                     format!("{f}{suffix}")
                 }
             }
+            Literal::Char(c) => format!("'{}'", Self::escape_char(*c)),
             Literal::String(s) => {
                 // Escape special characters for C string literals
                 let escaped: String = s

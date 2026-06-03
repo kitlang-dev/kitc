@@ -39,6 +39,8 @@ pub struct TypeStore {
     nodes: Vec<TypeNode>,
     type_vars: Vec<TypeVar>,
     next_id: u32,
+    /// Type alias definitions (`typedef X = Int32`). Resolved during unification.
+    pub(crate) typedefs: Vec<(String, Type)>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +57,7 @@ impl TypeStore {
             nodes: Vec::new(),
             type_vars: Vec::new(),
             next_id: 0,
+            typedefs: Vec::new(),
         }
     }
 
@@ -123,6 +126,30 @@ impl TypeStore {
         var.binding.ok_or_else(|| {
             format!("Cannot resolve type ID {id:?}: type variable {var_id:?} is unbound")
         })
+    }
+
+    /// Register a typedef alias (e.g., `typedef MyInt = Int32`).
+    pub fn register_typedef(&mut self, name: String, underlying: Type) {
+        self.typedefs.push((name, underlying));
+    }
+
+    /// Resolve a `Type::Named` through the typedef chain, if one exists.
+    fn resolve_typedef<'a>(&'a self, name: &str) -> Option<&'a Type> {
+        for (alias, underlying) in &self.typedefs {
+            if alias.as_str() == name {
+                return Some(underlying);
+            }
+        }
+        None
+    }
+
+    /// If `ty` is a `Named` type matching a registered typedef, returns the underlying type.
+    pub(crate) fn resolve_typedef_type(&self, ty: &Type) -> Option<Type> {
+        if let Type::Named(name) = ty {
+            self.resolve_typedef(name).cloned()
+        } else {
+            None
+        }
     }
 
     /// Create a known type from an optional annotation, or an unknown type variable if None.
@@ -203,7 +230,21 @@ impl TypeStore {
             return Ok(());
         }
 
-        match (a, b) {
+        // Resolve typedefs before matching: substitute `Named` with underlying type.
+        let a_ty = self.resolve_typedef_type(a).unwrap_or_else(|| a.clone());
+        let b_ty = self.resolve_typedef_type(b).unwrap_or_else(|| b.clone());
+
+        // Fast path on resolved types: identical simple types
+        if a_ty == b_ty
+            && !matches!(
+                a_ty,
+                Type::Ptr(_) | Type::Tuple(_) | Type::CArray(..) | Type::Named(_)
+            )
+        {
+            return Ok(());
+        }
+
+        match (&a_ty, &b_ty) {
             // Pointer types: unify inner types
             (Type::Ptr(t1), Type::Ptr(t2)) => self.unify_type_ids((**t1).clone(), (**t2).clone()),
 
@@ -242,10 +283,10 @@ impl TypeStore {
             }
 
             // Numeric type promotion: allow mixed-width integer/float types to unify
-            _ if Self::is_numeric(a) && Self::is_numeric(b) => Ok(()),
+            _ if Self::is_numeric(&a_ty) && Self::is_numeric(&b_ty) => Ok(()),
 
             // Everything else is a type mismatch
-            _ => Err(format!("Type mismatch: {a:?} vs {b:?}")),
+            _ => Err(format!("Type mismatch: {:?} vs {:?}", a_ty, b_ty)),
         }
     }
 

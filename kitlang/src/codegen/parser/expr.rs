@@ -127,7 +127,17 @@ impl Parser {
                         }
                     }
                     Rule::boolean => Self::parse_bool_literal(inner.as_str()),
-                    Rule::char_literal => todo!("char literal parsing not yet supported"),
+                    Rule::char_literal => {
+                        let s = inner.as_str();
+                        let inner_content = &s[1..s.len() - 1];
+                        let c = Self::unescape(inner_content)
+                            .and_then(|u| u.chars().next())
+                            .ok_or_else(|| parse_error!("invalid char literal: {s}"))?;
+                        Ok(Expr::Literal {
+                            value: Literal::Char(c),
+                            ty: TypeId::default(),
+                        })
+                    }
                     _ => Err(parse_error!(
                         "Unexpected literal type: {:?}",
                         inner.as_rule()
