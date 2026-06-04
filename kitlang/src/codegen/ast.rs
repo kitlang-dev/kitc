@@ -282,6 +282,13 @@ pub enum Expr {
         /// Inferred type.
         ty: TypeId,
     },
+    /// Array literal (e.g., `[1, 2, 3]`). Inferred type is `CArray(element_type, len)`.
+    ArrayLiteral {
+        /// The element expressions.
+        elements: Vec<Expr>,
+        /// Inferred `CArray` type.
+        ty: TypeId,
+    },
 }
 
 /// Represents a literal value in Kit.

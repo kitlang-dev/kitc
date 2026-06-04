@@ -275,6 +275,17 @@ impl Parser {
                     end: Box::new(end),
                 })
             }
+            Rule::array_literal => {
+                let elements = pair
+                    .into_inner()
+                    .filter(|p: &Pair<Rule>| p.as_rule() == Rule::expr)
+                    .map(|p| self.parse_expr(p))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Expr::ArrayLiteral {
+                    elements,
+                    ty: TypeId::default(),
+                })
+            }
             other => Err(CompilationError::ParseError(format!(
                 "Unexpected expr rule: {other:?}"
             ))),

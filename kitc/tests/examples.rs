@@ -379,3 +379,8 @@ fn test_char_literals() -> Result<(), Box<dyn std::error::Error>> {
 fn test_typedef() -> Result<(), Box<dyn std::error::Error>> {
     run_example_test("typedef_test", None)
 }
+
+#[test]
+fn test_array_literal() -> Result<(), Box<dyn std::error::Error>> {
+    run_example_test("array_literal", None)
+}

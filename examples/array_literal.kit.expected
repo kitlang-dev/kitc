@@ -1,0 +1,5 @@
+single: ok
+multi: ok
+mixed: ok
+chars: ok
+all array literal tests passed

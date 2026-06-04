@@ -126,6 +126,7 @@ impl CodegenCtx<'_> {
             | Expr::FieldAccess { ty, .. }
             | Expr::EnumVariant { ty, .. }
             | Expr::EnumInit { ty, .. } => *ty,
+            Expr::ArrayLiteral { ty, .. } => *ty,
             Expr::RangeLiteral { .. } => TypeId::default(),
         }
     }
@@ -176,21 +177,27 @@ impl CodegenCtx<'_> {
     }
 
     fn transpile_global(&self, global: &GlobalDecl) -> String {
-        let ty = self.resolve_type_to_c_name(global.inferred, "int");
-        let const_prefix = if global.is_const { "const " } else { "" };
         let module = global.mangling_module(&self.current_module);
         let global_name = mangle_name(&module, &global.name);
+        let decl = self.format_var_decl(global.inferred, &global_name);
+        let const_prefix = if global.is_const { "const " } else { "" };
         let extern_prefix = if global.is_extern() { "extern " } else { "" };
 
         match &global.init {
+            // Array literals as initializers need plain brace-enclosed lists
+            Some(Expr::ArrayLiteral { elements, .. }) => {
+                let elems = elements
+                    .iter()
+                    .map(|e| self.transpile_expr(e))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{extern_prefix}{const_prefix}{decl} = {{{elems}}};")
+            }
             Some(expr) => {
                 let init_str = self.transpile_expr(expr);
-                format!(
-                    "{extern_prefix}{const_prefix}{ty} {} = {init_str};",
-                    global_name
-                )
+                format!("{extern_prefix}{const_prefix}{decl} = {init_str};")
             }
-            None => format!("{extern_prefix}{const_prefix}{ty} {};", global_name),
+            None => format!("{extern_prefix}{const_prefix}{decl};"),
         }
     }
 
@@ -231,10 +238,20 @@ impl CodegenCtx<'_> {
                     inferred,
                     init,
                 } => {
-                    let ty_str = self.resolve_type_to_c_name(*inferred, "int");
+                    let decl = self.format_var_decl(*inferred, name);
                     match init {
-                        Some(expr) => format!("{ty_str} {name} = {};\n", self.transpile_expr(expr)),
-                        None => format!("{ty_str} {name};\n"),
+                        // Array literals as initializers need plain brace-enclosed lists,
+                        // not compound literals (which are invalid in C initializer context)
+                        Some(Expr::ArrayLiteral { elements, .. }) => {
+                            let elems = elements
+                                .iter()
+                                .map(|e| self.transpile_expr(e))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            format!("{decl} = {{{elems}}};\n")
+                        }
+                        Some(expr) => format!("{decl} = {};\n", self.transpile_expr(expr)),
+                        None => format!("{decl};\n"),
                     }
                 }
                 Stmt::Expr(expr) => format!("{};\n", self.transpile_expr(expr)),
@@ -345,6 +362,24 @@ impl CodegenCtx<'_> {
 
     fn format_function_params(&self, params: &[Param]) -> String {
         self.format_function_params_with_module(params, &self.current_module)
+    }
+
+    /// Format a variable declaration with proper C syntax.
+    ///
+    /// For CArray types (e.g., `CArray(Int, 3)`), this produces `int name[3]` instead of the
+    /// default `int[3] name` which is invalid C.
+    fn format_var_decl(&self, type_id: TypeId, name: &str) -> String {
+        let resolved = self.inferencer.store.resolve(type_id);
+        match resolved {
+            Ok(Type::CArray(elem_type, size)) => {
+                let elem_c_name = self.type_to_c_name(&elem_type);
+                format!("{elem_c_name} {name}[{size}]")
+            }
+            _ => {
+                let ty_str = self.resolve_type_to_c_name(type_id, "int");
+                format!("{ty_str} {name}")
+            }
+        }
     }
 
     fn format_function_params_with_module(&self, params: &[Param], module: &ModulePath) -> String {
@@ -547,6 +582,24 @@ impl CodegenCtx<'_> {
                 variant_name,
                 ..
             } => self.mangled_enum_variant(enum_name, variant_name),
+            Expr::ArrayLiteral { elements, ty } => {
+                // Resolve the array type to get the element type name for the compound literal
+                let array_c_name = self
+                    .inferencer
+                    .store
+                    .resolve(*ty)
+                    .ok()
+                    .map(|t| self.type_to_c_name(&t))
+                    .unwrap_or_else(|| "int[]".to_string());
+
+                // Construct the compound literal
+                let elems = elements
+                    .iter()
+                    .map(|e| self.transpile_expr(e))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("({array_c_name}){{{elems}}}")
+            }
             Expr::EnumInit {
                 enum_name,
                 variant_name,

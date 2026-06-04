@@ -23,6 +23,7 @@ fn set_expr_type(expr: &mut Expr, ty: TypeId) -> &mut Expr {
         | Expr::EnumVariant { ty: t, .. }
         | Expr::EnumInit { ty: t, .. } => *t = ty,
         Expr::RangeLiteral { .. } => {}
+        Expr::ArrayLiteral { ty: t, .. } => *t = ty,
     }
     expr
 }
@@ -336,6 +337,7 @@ impl TypeInferencer {
             Expr::FieldAccess { .. } => self.infer_field_access(expr)?,
             Expr::EnumVariant { .. } => self.infer_enum_variant(expr)?,
             Expr::EnumInit { .. } => self.infer_enum_init(expr)?,
+            Expr::ArrayLiteral { .. } => self.infer_array_literal(expr)?,
         })
     }
 
@@ -876,6 +878,41 @@ impl TypeInferencer {
         let enum_ty = self.store.new_known(Type::Named(enum_name.clone()));
         *ty = enum_ty;
         Ok(enum_ty)
+    }
+
+    /// Infer type for an array literal expression.
+    /// All elements must unify to the same type, and the result is `CArray(element_type, len)`.
+    /// Empty array literals (`[]`) are rejected because the element type can't be determined.
+    fn infer_array_literal(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
+        let Expr::ArrayLiteral { elements, ty } = expr else {
+            unreachable!("infer_array_literal called on non-ArrayLiteral");
+        };
+
+        // At least one element needed to infer the element type
+        if elements.is_empty() {
+            return Err(type_err!(
+                "Empty array literal '[]' is not supported; add at least one element or a type annotation"
+            ));
+        }
+
+        // Infer the first element's type as the element type
+        let elem_ty_id = self.infer_expr(&mut elements[0])?;
+
+        // Unify all remaining elements with the first element's type
+        for elem in elements.iter_mut().skip(1) {
+            let e_ty = self.infer_expr(elem)?;
+            self.unify(elem_ty_id, e_ty)?;
+            set_expr_type(elem, elem_ty_id);
+        }
+
+        // Resolve the element type to store it concretely in the CArray type
+        let elem_ty = self
+            .store
+            .resolve(elem_ty_id)
+            .map_err(|e| type_err!("Failed to resolve array element type: {e}"))?;
+        let array_ty = Type::CArray(Box::new(elem_ty), elements.len());
+        *ty = self.store.new_known(array_ty);
+        Ok(*ty)
     }
 
     /// Resolve default arguments for enum variant constructors.
