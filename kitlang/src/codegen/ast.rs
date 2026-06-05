@@ -289,6 +289,15 @@ pub enum Expr {
         /// Inferred `CArray` type.
         ty: TypeId,
     },
+    /// Array index access (e.g., `arr[i]`).
+    Index {
+        /// The container expression (array or pointer).
+        expr: Box<Expr>,
+        /// The index expression.
+        index: Box<Expr>,
+        /// Inferred element type.
+        ty: TypeId,
+    },
 }
 
 /// Represents a literal value in Kit.

@@ -24,6 +24,7 @@ fn set_expr_type(expr: &mut Expr, ty: TypeId) -> &mut Expr {
         | Expr::EnumInit { ty: t, .. } => *t = ty,
         Expr::RangeLiteral { .. } => {}
         Expr::ArrayLiteral { ty: t, .. } => *t = ty,
+        Expr::Index { ty: t, .. } => *t = ty,
     }
     expr
 }
@@ -295,18 +296,23 @@ impl TypeInferencer {
 
                 // NOTE: RangeLiteral is typed as Void (see infer_range_literal),
                 // so this accepts both integer-count and range-based for-loops.
-                // TODO: Give ranges a proper type instead of piggybacking on Void.
+                // Accept CArray for iterating over arrays (e.g. `for x in arr`).
                 let iter_resolved = self
                     .store
                     .resolve(iter_ty)
                     .map_err(CompilationError::TypeError)?;
-                if iter_resolved != Type::Int && iter_resolved != Type::Void {
-                    return Err(type_err!(
-                        "For loop iterator must be Int or Range, found {iter_resolved:?}"
-                    ));
-                }
 
-                let var_ty = self.store.new_known(Type::Int);
+                let var_ty = match &iter_resolved {
+                    // For CArray, the loop variable gets the element type
+                    Type::CArray(elem_type, _) => self.store.new_known(*elem_type.clone()),
+                    // Int and Void use int as the loop variable (count-based)
+                    Type::Int | Type::Void => self.store.new_known(Type::Int),
+                    other => {
+                        return Err(type_err!(
+                            "For loop iterator must be Int, Range, or Array, found {other:?}"
+                        ));
+                    }
+                };
                 self.symbols.define_var(var, var_ty);
 
                 self.infer_block(body)?;
@@ -338,6 +344,7 @@ impl TypeInferencer {
             Expr::EnumVariant { .. } => self.infer_enum_variant(expr)?,
             Expr::EnumInit { .. } => self.infer_enum_init(expr)?,
             Expr::ArrayLiteral { .. } => self.infer_array_literal(expr)?,
+            Expr::Index { .. } => self.infer_index(expr)?,
         })
     }
 
@@ -913,6 +920,40 @@ impl TypeInferencer {
         let array_ty = Type::CArray(Box::new(elem_ty), elements.len());
         *ty = self.store.new_known(array_ty);
         Ok(*ty)
+    }
+
+    /// Infer type for an array index expression (e.g., `arr[i]`).
+    /// Resolves the container to get the element type, and unifies the index with Int.
+    fn infer_index(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
+        let Expr::Index {
+            expr: container,
+            index,
+            ty,
+        } = expr
+        else {
+            unreachable!("infer_index called on non-Index");
+        };
+        let container_ty = self.infer_expr(container)?;
+        let index_ty = self.infer_expr(index)?;
+
+        let int_ty = self.store.new_known(Type::Int);
+        self.unify(index_ty, int_ty)?;
+
+        let resolved = self
+            .store
+            .resolve(container_ty)
+            .map_err(CompilationError::TypeError)?;
+        let elem_ty = match resolved {
+            Type::CArray(elem_type, _) => self.store.new_known(*elem_type),
+            Type::Ptr(inner) => self.store.new_known(*inner),
+            _ => {
+                return Err(type_err!(
+                    "Cannot index non-array type: {resolved:?}"
+                ));
+            }
+        };
+        *ty = elem_ty;
+        Ok(elem_ty)
     }
 
     /// Resolve default arguments for enum variant constructors.

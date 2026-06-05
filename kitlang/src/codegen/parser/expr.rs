@@ -37,6 +37,7 @@ impl Parser {
                         .next()
                         .ok_or_else(|| parse_error!("binary op missing left operand"))?,
                 )?;
+
                 while let Some(op_pair) = inner.next() {
                     let op = BinaryOperator::from_rule_pair(&op_pair)?;
                     let right = self.parse_expr(
@@ -96,12 +97,16 @@ impl Parser {
                     .into_inner()
                     .next()
                     .ok_or_else(|| parse_error!("literal is empty"))?;
+
+                // Dispatch to the kind-specific literal parser
                 match inner.as_rule() {
                     Rule::number => {
                         let num_pair = inner
                             .into_inner()
                             .next()
                             .ok_or_else(|| parse_error!("number literal is empty"))?;
+
+                        // Dispatch to integer or float parser by number subtype
                         match num_pair.as_rule() {
                             Rule::integer => {
                                 let s = num_pair.as_str();
@@ -172,21 +177,25 @@ impl Parser {
             }
             Rule::if_expr => {
                 let mut inner = pair.into_inner();
+
                 let cond = self.parse_expr(
                     inner
                         .next()
                         .ok_or_else(|| parse_error!("if expr missing condition"))?,
                 )?;
+
                 let then_branch = self.parse_expr(
                     inner
                         .next()
                         .ok_or_else(|| parse_error!("if expr missing then branch"))?,
                 )?;
+
                 let else_branch = self.parse_expr(
                     inner
                         .next()
                         .ok_or_else(|| parse_error!("if expr missing else branch"))?,
                 )?;
+
                 Ok(Expr::If {
                     cond: Box::new(cond),
                     then_branch: Box::new(then_branch),
@@ -194,6 +203,7 @@ impl Parser {
                     ty: TypeId::default(),
                 })
             }
+            // Handle bare keyword primaries (null/true/false) and wrapped primaries that delegate inward
             Rule::primary => {
                 let text = pair.as_str();
                 let mut inner = pair.into_inner();
@@ -240,19 +250,40 @@ impl Parser {
                         .next()
                         .ok_or_else(|| parse_error!("postfix expr missing base expression"))?,
                 )?;
+
+                // Apply each chained member operation (field access or index) in order
                 for field_pair in inner {
+                    // Skip non-postfix inner rules, only postfix_field carries a member operation
                     if field_pair.as_rule() == Rule::postfix_field {
                         let mut field_inner = field_pair.into_inner();
-                        let field_name = Self::pair_text(
-                            field_inner
-                                .next()
-                                .ok_or(parse_error!("Expected field name after '.'"))?,
-                        );
-                        expr = Expr::FieldAccess {
-                            expr: Box::new(expr),
-                            field_name,
-                            ty: TypeId::default(),
-                        };
+                        let first = field_inner
+                            .next()
+                            .ok_or(parse_error!("Expected field or index in postfix"))?;
+
+                        // Branch on whether the operation is a member access or an index expression
+                        match first.as_rule() {
+                            Rule::identifier => {
+                                let field_name = Self::pair_text(first);
+                                expr = Expr::FieldAccess {
+                                    expr: Box::new(expr),
+                                    field_name,
+                                    ty: TypeId::default(),
+                                };
+                            }
+                            Rule::expr => {
+                                let index = self.parse_expr(first)?;
+                                expr = Expr::Index {
+                                    expr: Box::new(expr),
+                                    index: Box::new(index),
+                                    ty: TypeId::default(),
+                                };
+                            }
+                            other => {
+                                return Err(parse_error!(
+                                    "Unexpected postfix_field inner rule: {other:?}"
+                                ));
+                            }
+                        }
                     }
                 }
                 Ok(expr)
@@ -294,16 +325,23 @@ impl Parser {
 
     fn parse_assign_expr(self, pair: Pair<Rule>) -> CompileResult<Expr> {
         let mut inner = pair.into_inner();
+
         let left_pair = inner
             .next()
             .ok_or_else(|| parse_error!("assign expr missing left operand"))?;
+
         let left = self.parse_expr(left_pair)?;
+
+        // A plain lvalue (no operator) means the recursive call returned the inner expression unchanged
         if let Some(assign_op_pair) = inner.next() {
             let op = AssignmentOperator::from_rule_pair(&assign_op_pair)?;
+
             let right_assign_expr_pair = inner
                 .next()
                 .ok_or_else(|| parse_error!("assign expr missing right operand"))?;
+
             let right = self.parse_assign_expr(right_assign_expr_pair)?;
+
             Ok(Expr::Assign {
                 op,
                 left: Box::new(left),
@@ -320,11 +358,14 @@ impl Parser {
         let type_pair = inner
             .next()
             .ok_or_else(|| parse_error!("struct init missing type name"))?;
+
         let struct_ty = self.parse_type(type_pair)?;
+
         let fields: Vec<FieldInit> = inner
-            .filter(|p| p.as_rule() == Rule::field_init)
-            .map(|p| self.parse_field_init(p))
-            .collect::<Result<_, _>>()?;
+            .filter(|p| p.as_rule() == Rule::field_init) // Drop separators, keep only field definitions
+            .map(|p| self.parse_field_init(p)) // Parse each definition into a FieldInit
+            .collect::<Result<_, _>>()?; // Short-circuit and propagate the first parse error
+
         Ok(Expr::StructInit {
             ty: TypeId::default(),
             struct_type: Some(struct_ty),
@@ -361,6 +402,9 @@ impl Parser {
         }
     }
 
+    /// Unescape common backslash sequences in a string slice.
+    ///
+    /// Returns `None` if the input ends with a stray backslash (no escape character follows it).
     fn unescape(s: impl AsRef<str>) -> Option<String> {
         let s = s.as_ref();
         let mut out = String::with_capacity(s.len());

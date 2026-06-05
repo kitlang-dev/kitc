@@ -127,6 +127,7 @@ impl CodegenCtx<'_> {
             | Expr::EnumVariant { ty, .. }
             | Expr::EnumInit { ty, .. } => *ty,
             Expr::ArrayLiteral { ty, .. } => *ty,
+            Expr::Index { ty, .. } => *ty,
             Expr::RangeLiteral { .. } => TypeId::default(),
         }
     }
@@ -228,73 +229,111 @@ impl CodegenCtx<'_> {
         )
     }
 
+    fn transpile_stmt(&self, stmt: &Stmt) -> String {
+        match stmt {
+            Stmt::VarDecl {
+                name,
+                annotation: _,
+                inferred,
+                init,
+            } => {
+                let decl = self.format_var_decl(*inferred, name);
+                match init {
+                    Some(Expr::ArrayLiteral { elements, .. }) => {
+                        let elems = elements
+                            .iter()
+                            .map(|e| self.transpile_expr(e))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("{decl} = {{{elems}}};\n")
+                    }
+                    Some(expr) => format!("{decl} = {};\n", self.transpile_expr(expr)),
+                    None => format!("{decl};\n"),
+                }
+            }
+            Stmt::Expr(expr) => format!("{};\n", self.transpile_expr(expr)),
+            Stmt::Return(expr) => match expr {
+                Some(e) => format!("return {};\n", self.transpile_expr(e)),
+                None => "return;\n".to_string(),
+            },
+            Stmt::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let mut s = format!("if ({}) ", self.transpile_expr(cond));
+                s.push_str(&self.transpile_block(then_branch));
+                if let Some(else_b) = else_branch {
+                    s.push_str(" else ");
+                    s.push_str(&self.transpile_block(else_b));
+                }
+                s.push('\n');
+                s
+            }
+            Stmt::While { cond, body } => {
+                let mut s = format!("while ({}) ", self.transpile_expr(cond));
+                s.push_str(&self.transpile_block(body));
+                s.push('\n');
+                s
+            }
+            Stmt::For { var, iter, body } => self.transpile_for(var, iter, body),
+            Stmt::Break => "break;\n".to_string(),
+            Stmt::Continue => "continue;\n".to_string(),
+        }
+    }
+
+    fn transpile_for(&self, var: &str, iter: &Expr, body: &Block) -> String {
+        let is_carray = self
+            .inferencer
+            .store
+            .resolve(Self::expr_type_id(iter))
+            .is_ok_and(|t| matches!(t, Type::CArray(..)));
+        if is_carray {
+            let Type::CArray(elem_type, size) = self
+                .inferencer
+                .store
+                .resolve(Self::expr_type_id(iter))
+                .expect("checked above")
+            else {
+                unreachable!("is_carray guard ensures this");
+            };
+            let iter_str = self.transpile_expr(iter);
+            let elem_c_name = self.type_to_c_name(&elem_type);
+            let idx_var = format!("__kit_{var}_idx");
+            let mut s = format!("for (int {idx_var} = 0; {idx_var} < {size}; ++{idx_var}) ");
+            let mut body_code = String::from("{\n");
+            body_code.push_str(&format!(
+                "    {elem_c_name} {var} = {iter_str}[{idx_var}];\n"
+            ));
+            for stmt in &body.stmts {
+                let stmt_code = self.transpile_stmt(stmt);
+                for line in stmt_code.lines() {
+                    body_code.push_str("    ");
+                    body_code.push_str(line);
+                    body_code.push('\n');
+                }
+            }
+            body_code.push('}');
+            s.push_str(&body_code);
+            s
+        } else if let Expr::RangeLiteral { start, end } = iter {
+            let start_str = self.transpile_expr(start);
+            let end_str = self.transpile_expr(end);
+            let mut s = format!("for (int {var} = {start_str}; {var} < {end_str}; ++{var}) ");
+            s.push_str(&self.transpile_block(body));
+            s
+        } else {
+            let iter_str = self.transpile_expr(iter);
+            let mut s = format!("for (int {var} = 0; {var} < {iter_str}; ++{var}) ");
+            s.push_str(&self.transpile_block(body));
+            s
+        }
+    }
+
     fn transpile_block(&self, block: &Block) -> String {
         let mut code = String::from("{\n");
         for stmt in &block.stmts {
-            let stmt_code = match stmt {
-                Stmt::VarDecl {
-                    name,
-                    annotation: _,
-                    inferred,
-                    init,
-                } => {
-                    let decl = self.format_var_decl(*inferred, name);
-                    match init {
-                        // Array literals as initializers need plain brace-enclosed lists,
-                        // not compound literals (which are invalid in C initializer context)
-                        Some(Expr::ArrayLiteral { elements, .. }) => {
-                            let elems = elements
-                                .iter()
-                                .map(|e| self.transpile_expr(e))
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            format!("{decl} = {{{elems}}};\n")
-                        }
-                        Some(expr) => format!("{decl} = {};\n", self.transpile_expr(expr)),
-                        None => format!("{decl};\n"),
-                    }
-                }
-                Stmt::Expr(expr) => format!("{};\n", self.transpile_expr(expr)),
-                Stmt::Return(expr) => match expr {
-                    Some(e) => format!("return {};\n", self.transpile_expr(e)),
-                    None => "return;\n".to_string(),
-                },
-                Stmt::If {
-                    cond,
-                    then_branch,
-                    else_branch,
-                } => {
-                    let mut s = format!("if ({}) ", self.transpile_expr(cond));
-                    s.push_str(&self.transpile_block(then_branch));
-                    if let Some(else_b) = else_branch {
-                        s.push_str(" else ");
-                        s.push_str(&self.transpile_block(else_b));
-                    }
-                    s.push('\n');
-                    s
-                }
-                Stmt::While { cond, body } => {
-                    let mut s = format!("while ({}) ", self.transpile_expr(cond));
-                    s.push_str(&self.transpile_block(body));
-                    s.push('\n');
-                    s
-                }
-                Stmt::For { var, iter, body } => {
-                    let mut s = if let Expr::RangeLiteral { start, end } = iter {
-                        let start_str = self.transpile_expr(start);
-                        let end_str = self.transpile_expr(end);
-                        format!("for (int {var} = {start_str}; {var} < {end_str}; ++{var}) ")
-                    } else {
-                        let iter_str = self.transpile_expr(iter);
-                        format!("for (int {var} = 0; {var} < {iter_str}; ++{var}) ")
-                    };
-                    s.push_str(&self.transpile_block(body));
-                    s
-                }
-                Stmt::Break => "break;\n".to_string(),
-                Stmt::Continue => "continue;\n".to_string(),
-            };
-
+            let stmt_code = self.transpile_stmt(stmt);
             for line in stmt_code.lines() {
                 code.push_str("    ");
                 code.push_str(line);
@@ -570,6 +609,11 @@ impl CodegenCtx<'_> {
                     );
                 }
                 format!("{}.{}", container, field_name)
+            }
+            Expr::Index { expr, index, .. } => {
+                let container = self.transpile_expr(expr);
+                let idx = self.transpile_expr(index);
+                format!("({container})[{idx}]")
             }
             Expr::EnumInit {
                 enum_name,

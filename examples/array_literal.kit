@@ -2,16 +2,28 @@ include "stdio.h";
 
 function main() {
     var a = [42];
-    printf("single: ok\n");
+    printf("single:\n");
+    for i in a {
+        printf("  %i\n", i);
+    }
 
     var b = [1, 2, 3];
-    printf("multi: ok\n");
+    printf("multi:\n");
+    for i in b {
+        printf("  %i\n", i);
+    }
 
-    var c = [1, 2.0, 3];
-    printf("mixed: ok\n");
+    var c = [2.0, 4.0, 6.0];
+    printf("float:\n");
+    for i in c {
+        printf("  %f\n", i);
+    }
 
     var d = ['A', 'B', 'C'];
-    printf("chars: ok\n");
+    printf("chars:\n");
+    for i in d {
+        printf("  %c\n", i);
+    }
 
     printf("all array literal tests passed\n");
 }

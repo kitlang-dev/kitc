@@ -1,5 +1,15 @@
-single: ok
-multi: ok
-mixed: ok
-chars: ok
+single:
+  42
+multi:
+  1
+  2
+  3
+float:
+  2.000000
+  4.000000
+  6.000000
+chars:
+  A
+  B
+  C
 all array literal tests passed

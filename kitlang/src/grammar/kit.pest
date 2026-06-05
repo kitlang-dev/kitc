@@ -129,7 +129,7 @@ unary_op = { "!" | "-" | "*" | "++" | "--" | "~" }
 unary = { (unary_op ~ unary) | (ADDRESS_OF_OP ~ postfix) | postfix }
 if_expr = { "if" ~ expr ~ "then" ~ expr ~ "else" ~ expr }
 postfix = { primary ~ (postfix_field)* }
-postfix_field = { "." ~ identifier }
+postfix_field = { "." ~ identifier | "[" ~ expr ~ "]" }
 primary = {
     if_expr |
     function_call_expr |
