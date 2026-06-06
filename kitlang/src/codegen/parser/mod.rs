@@ -1,11 +1,15 @@
-mod expr;
+mod binding_power;
+mod diagnostics;
+mod expr_pratt;
 
 use pest::iterators::Pair;
 
 use crate::error::CompilationError;
 use crate::{Rule, parse_error};
 
-use super::ast::{Block, Function, GlobalDecl, Include, Literal, MetaArg, Metadata, Param, Stmt};
+use super::ast::{
+    Block, Expr, Function, GlobalDecl, Include, Literal, MetaArg, Metadata, Param, Stmt,
+};
 use super::module::{ImportType, ModuleImport, ModulePath};
 use super::type_ast::{
     EnumDefinition, EnumVariant, Field, ImplDefinition, RuleDecl, RuleSet, StructDefinition,
@@ -13,6 +17,40 @@ use super::type_ast::{
 };
 use super::types::{Type, TypeId};
 use crate::error::CompileResult;
+
+/// Bridge between pest and the Pratt parser.
+///
+/// The pest-based parser walks the grammar tree and, when it encounters
+/// an `expr` rule, hands the corresponding `Pair` off to the Pratt parser
+/// via this adapter. The adapter:
+///
+/// 1. Pulls the source text out of the `Pair` with `as_str()`.
+/// 2. Tokenizes it with the Logos lexer.
+/// 3. Parses the tokens with the Pratt parser.
+/// 4. Converts the Pratt parser's `ExprParseError` to the public
+///    `CompilationError`.
+///
+/// This is the *only* conversion point between the two parsers; it's
+/// also the only place the public error type is built from the
+/// parser-internal one. Future diagnostic improvements (spans, severity,
+/// pretty rendering) are added at this single seam.
+pub(crate) struct PestExpr<'a> {
+    pair: Pair<'a, Rule>,
+}
+
+impl<'a> PestExpr<'a> {
+    /// Wrap a pest `Pair` whose rule is an expression.
+    pub(crate) fn new(pair: Pair<'a, Rule>) -> Self {
+        Self { pair }
+    }
+
+    /// Parse the wrapped pair as a Kit expression.
+    pub(crate) fn parse(self) -> CompileResult<Expr> {
+        let text = self.pair.as_str();
+        expr_pratt::parse_kit_expr(text)
+            .map_err(|e| CompilationError::ParseError(e.to_human_message()))
+    }
+}
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct Parser;
@@ -144,6 +182,19 @@ impl Parser {
     }
 
     /// Parse a `function_decl` rule into a `Function`.
+    /// Parse an expression via the Pratt parser. This is the unified
+    /// entry point used by every pest-side call site that needs an
+    /// expression AST node.
+    ///
+    /// `Parser` is `Copy`, so we take `self` by value to match the
+    /// signature of the (now-deleted) pest-based `parse_expr`. The
+    /// caller doesn't need to mutate the parser; the Pratt parser
+    /// operates on its own `ExprParser` instance built from a token
+    /// slice derived from the `Pair`.
+    pub fn parse_expr(self, pair: Pair<Rule>) -> CompileResult<Expr> {
+        PestExpr::new(pair).parse()
+    }
+
     pub fn parse_function(&self, pair: Pair<Rule>) -> CompileResult<Function> {
         let mut inner = pair.into_inner();
 
@@ -748,4 +799,10 @@ impl Parser {
         )?;
         Ok(Stmt::For { var, iter, body })
     }
+
+    // The pest-based `parse_struct_init` and `parse_field_init` helpers
+    // were removed when the Pratt parser took over. Struct literals are
+    // now parsed from the token stream directly (see
+    // `ExprParser::parse_struct_init` in `expr_pratt.rs`), so the
+    // `Pair<Rule>`-based versions in this `impl` are no longer reachable.
 }

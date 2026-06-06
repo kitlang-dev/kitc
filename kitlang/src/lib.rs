@@ -11,5 +11,12 @@ pub use codegen::Toolchain;
 #[grammar = "grammar/kit.pest"]
 pub struct KitParser;
 
+/// Tokenizer for expressions, used by the Pratt parser.
+///
+/// Pest still handles the program/declaration/statement grammar; the Pratt
+/// parser only takes over expression parsing, and it needs a token stream
+/// to do so. The Logos-based lexer here is that token stream.
+pub(crate) mod lexer;
+
 /// Compilation error types.
 pub(crate) mod error;

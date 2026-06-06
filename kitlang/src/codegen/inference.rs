@@ -947,9 +947,7 @@ impl TypeInferencer {
             Type::CArray(elem_type, _) => self.store.new_known(*elem_type),
             Type::Ptr(inner) => self.store.new_known(*inner),
             _ => {
-                return Err(type_err!(
-                    "Cannot index non-array type: {resolved:?}"
-                ));
+                return Err(type_err!("Cannot index non-array type: {resolved:?}"));
             }
         };
         *ty = elem_ty;
