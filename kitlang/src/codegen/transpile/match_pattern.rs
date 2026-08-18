@@ -1,7 +1,7 @@
 use super::CodegenCtx;
 use crate::codegen::ast::{self, Expr, ExprKind, Literal, MatchArm, MatchStmt};
 use crate::codegen::name_mangling::mangle_enum_variant;
-use crate::codegen::types::TypeId;
+use crate::codegen::types::{Type, TypeId};
 
 /// A variable binding (name, c_type, value).
 pub type VariableBinding = (String, String, String);
@@ -107,8 +107,12 @@ impl CodegenCtx<'_> {
             }
             ExprKind::Call { callee, args } => {
                 if let ExprKind::Identifier { name: variant_name } = &callee.kind
-                    && let Some(pm) =
-                        self.decompose_enum_variant_call_pattern(variant_name, args, matched_value)
+                    && let Some(pm) = self.decompose_enum_variant_call_pattern(
+                        variant_name,
+                        args,
+                        matched_ty,
+                        matched_value,
+                    )
                 {
                     return pm;
                 }
@@ -164,13 +168,19 @@ impl CodegenCtx<'_> {
             Some(info) => info,
             None => return self.binding_pattern(name, matched_ty, matched_value),
         };
-        let enum_name = &info.enum_name;
-        let enum_def = match self.inferencer.symbols().lookup_enum(enum_name) {
+        // The matched value's own type selects the monomorph (variant lookup
+        // order for template/monomorph infos is not deterministic).
+        let enum_name = match self.inferencer.store.resolve(matched_ty) {
+            Ok(Type::Named(n)) if self.inferencer.is_monomorph_name(&n) => n,
+            Ok(_) if self.inferencer.is_monomorph_name(&info.enum_name) => info.enum_name.clone(),
+            _ => self.resolved_enum_name(matched_ty, &info.enum_name),
+        };
+        let enum_def = match self.inferencer.symbols().lookup_enum(&enum_name) {
             Some(def) => def,
             None => return self.binding_pattern(name, matched_ty, matched_value),
         };
         let all_simple = enum_def.variants.iter().all(|v| v.args.is_empty());
-        let mangled = mangle_enum_variant(&self.current_module, enum_name, name);
+        let mangled = mangle_enum_variant(&self.current_module, &enum_name, name);
 
         if all_simple {
             return PatternMatch {
@@ -204,17 +214,24 @@ impl CodegenCtx<'_> {
         &self,
         variant_name: &str,
         args: &[Expr],
+        matched_ty: TypeId,
         matched_value: &str,
     ) -> Option<PatternMatch> {
         let info = self
             .inferencer
             .symbols()
             .lookup_enum_variant_by_simple_name(variant_name)?;
-        let enum_name = &info.enum_name;
-        let enum_def = self.inferencer.symbols().lookup_enum(enum_name)?.clone();
+        // The matched value's own type selects the monomorph (see
+        // `decompose_identifier_pattern`).
+        let enum_name = match self.inferencer.store.resolve(matched_ty) {
+            Ok(Type::Named(n)) if self.inferencer.is_monomorph_name(&n) => n,
+            Ok(_) if self.inferencer.is_monomorph_name(&info.enum_name) => info.enum_name.clone(),
+            _ => self.resolved_enum_name(matched_ty, &info.enum_name),
+        };
+        let enum_def = self.inferencer.symbols().lookup_enum(&enum_name)?.clone();
 
         let all_simple = enum_def.variants.iter().all(|v| v.args.is_empty());
-        let mangled = mangle_enum_variant(&self.current_module, enum_name, variant_name);
+        let mangled = mangle_enum_variant(&self.current_module, &enum_name, variant_name);
 
         if all_simple {
             return Some(PatternMatch {
@@ -241,7 +258,13 @@ impl CodegenCtx<'_> {
                 info.arg_types.len(),
                 variant_name,
             );
-            let field_ty = info.arg_types[i];
+            // Field types come from the (resolved, possibly monomorphized) enum
+            // definition; the variant info registered for generic enums keeps
+            // the raw `T`-style annotations.
+            let field_ty = variant_def
+                .and_then(|v| v.args.get(i))
+                .map(|a| a.ty)
+                .unwrap_or(info.arg_types[i]);
             let field_name = variant_def
                 .and_then(|vd| vd.args.get(i))
                 .map(|a| &a.name)

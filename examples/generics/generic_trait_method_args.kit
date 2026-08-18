@@ -1,0 +1,21 @@
+include "stdio.h";
+
+trait Adder() {
+    function add(other: Int): Int;
+}
+
+struct Point {
+    var x: Int;
+}
+
+implement Adder for Point {
+    function add(other: Int): Int {
+        return this.x + other;
+    }
+}
+
+function main() {
+    var p: Point = struct Point { x: 10 };
+    var r: Int = p.add(5);
+    printf("%i\n", r);
+}

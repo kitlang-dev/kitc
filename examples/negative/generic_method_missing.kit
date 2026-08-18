@@ -1,0 +1,15 @@
+include "stdio.h";
+
+trait Describable() {
+    function describe(): Int;
+}
+
+struct Foo {
+    var v: Int;
+}
+
+function main() {
+    var f: Foo = struct Foo { v: 1 };
+    var d: Int = f.describe();
+    printf("%i\n", d);
+}

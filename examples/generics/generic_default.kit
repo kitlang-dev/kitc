@@ -1,0 +1,11 @@
+include "stdio.h";
+
+struct Defaults[T = Int] {
+    var value: T;
+}
+
+function main() {
+    // the missing parameter falls back to its declared default
+    var d: Defaults = struct Defaults { value: 99 };
+    printf("%i\n", d.value);
+}

@@ -642,9 +642,27 @@ impl CodegenCtx<'_> {
         }
     }
 
-    fn transpile_call(&self, callee: &Expr, args: &[Expr]) -> String {
+    /// `mangled_enum_variant` that resolves a generic (template) enum through the
+    /// expression's type to the concrete monomorph.
+    fn mangled_enum_variant_for(
+        &self,
+        expr_ty: TypeId,
+        enum_name: &str,
+        variant_name: &str,
+    ) -> String {
+        let resolved = if self.inferencer.is_template_enum(enum_name) {
+            self.resolved_enum_name(expr_ty, enum_name)
+        } else {
+            enum_name.to_string()
+        };
+        self.mangled_enum_variant(&resolved, variant_name)
+    }
+
+    /// Transpile a call, passing `call_ty` so generic-function and generic-enum
+    /// call sites are mangled to their realized monomorph.
+    fn transpile_call(&self, callee: &Expr, args: &[Expr], call_ty: TypeId) -> String {
         if let Some(name) = callee_name(callee) {
-            self.transpile_named_call(&name, args)
+            self.transpile_named_call(&name, args, call_ty)
         } else {
             let callee_c = self.transpile_expr(callee);
             let a = args
@@ -656,19 +674,51 @@ impl CodegenCtx<'_> {
         }
     }
 
-    fn transpile_named_call(&self, name: &str, args: &[Expr]) -> String {
+    /// Resolve the C enum name for a variant reference.
+    ///
+    /// Generic (template) enums are never emitted, so a reference is resolved through the monomorph
+    /// selected by the expression's type; non-generic enums return `declared` unchanged.
+    fn resolved_enum_name(&self, expr_ty: TypeId, declared: &str) -> String {
+        if self.inferencer.is_template_enum(declared) {
+            self.inferencer
+                .store
+                .resolve(expr_ty)
+                .ok()
+                .and_then(|t| match t {
+                    Type::Named(name) if self.inferencer.is_monomorph_name(&name) => Some(name),
+                    _ => None,
+                })
+                .unwrap_or_else(|| declared.to_string())
+        } else {
+            declared.to_string()
+        }
+    }
+
+    /// Transpile a call whose callee resolves to a known name.
+    ///
+    /// Enum constructor calls are mangled to the monomorph when the variant belongs to a generic
+    /// enum (its declared name would reference the unemitted template). The call's own type selects
+    /// the monomorph, since template and monomorph variant-infos share the simple variant name and
+    /// symbol-table lookup order is nondeterministic.
+    fn transpile_named_call(&self, name: &str, args: &[Expr], call_ty: TypeId) -> String {
         if let Some(info) = self
             .inferencer
             .symbols()
             .lookup_enum_variant_by_simple_name(name)
         {
+            let enum_name = match self.inferencer.store.resolve(call_ty) {
+                Ok(Type::Named(n)) if self.inferencer.is_monomorph_name(&n) => n,
+                _ if self.inferencer.is_template_enum(&info.enum_name) => {
+                    self.resolved_enum_name(call_ty, &info.enum_name)
+                }
+                _ => info.enum_name.clone(),
+            };
             let a = args
                 .iter()
                 .map(|a| self.transpile_expr(a))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let ctor =
-                mangle_enum_variant(&self.current_module, &info.enum_name, &info.variant_name);
+            let ctor = mangle_enum_variant(&self.current_module, &enum_name, &info.variant_name);
             return format!("{}_new({})", ctor, a);
         }
         let (mod_path, base_name) = if let Some((mp, bn)) = self.resolve_function_name(name) {
@@ -690,6 +740,10 @@ impl CodegenCtx<'_> {
             && self.is_function_in_current_module(name)
         {
             mangle_name(&self.current_module, name)
+        } else if let Some(mp) = self.inferencer.monomorph_module(name).cloned() {
+            // Monomorphized generic function: mangle with the module that
+            // defines its template so callers match the emitted definition.
+            mangle_name(&mp, name)
         } else {
             name.to_string()
         };
@@ -1105,7 +1159,7 @@ impl CodegenCtx<'_> {
                 });
                 lit.to_c_with_float(is_c_float)
             }
-            ExprKind::Call { callee, args } => self.transpile_call(callee, args),
+            ExprKind::Call { callee, args } => self.transpile_call(callee, args, expr.ty),
             ExprKind::UnaryOp { op, expr: inner } => {
                 let inner = self.transpile_expr(inner);
                 match op {
@@ -1163,11 +1217,11 @@ impl CodegenCtx<'_> {
                 enum_name,
                 variant_name,
                 args,
-            } if args.is_empty() => self.mangled_enum_variant(enum_name, variant_name),
+            } if args.is_empty() => self.mangled_enum_variant_for(expr.ty, enum_name, variant_name),
             ExprKind::EnumVariant {
                 enum_name,
                 variant_name,
-            } => self.mangled_enum_variant(enum_name, variant_name),
+            } => self.mangled_enum_variant_for(expr.ty, enum_name, variant_name),
             ExprKind::ArrayLiteral { elements, .. } => {
                 self.transpile_array_literal(expr.ty, elements)
             }
@@ -1176,8 +1230,15 @@ impl CodegenCtx<'_> {
                 variant_name,
                 args,
             } => {
-                let a = self.transpile_enum_args_with_defaults(enum_name, variant_name, args);
-                let ctor = mangle_enum_variant(&self.current_module, enum_name, variant_name);
+                // Generic enums resolve to the monomorph selected by the
+                // expression's type; their defaults live in that monomorph.
+                let enum_name = if self.inferencer.is_template_enum(enum_name) {
+                    self.resolved_enum_name(expr.ty, enum_name)
+                } else {
+                    enum_name.clone()
+                };
+                let a = self.transpile_enum_args_with_defaults(&enum_name, variant_name, args);
+                let ctor = mangle_enum_variant(&self.current_module, &enum_name, variant_name);
                 format!("{}_new({})", ctor, a)
             }
         }

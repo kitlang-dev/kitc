@@ -1,0 +1,17 @@
+include "stdio.h";
+
+default Numeric as Int;
+
+trait Numeric() {}
+implement Numeric for Int {}
+implement Numeric for Float {}
+
+struct Pair[T: Numeric, U: Numeric] {
+    var first: T;
+    var second: U;
+}
+
+function main() {
+    var p: Pair[Int] = struct Pair { first: 5, second: 0 };
+    printf("%i %i\n", p.first, p.second);
+}

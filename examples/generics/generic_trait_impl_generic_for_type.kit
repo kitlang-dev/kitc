@@ -1,0 +1,20 @@
+include "stdio.h";
+
+trait Describable() {
+    function describe(): Int;
+}
+
+struct WrapperType[T] {
+    var value: T;
+}
+
+implement Describable for WrapperType[T] {
+    function describe(): Int {
+        return this.value;
+    }
+}
+
+function main() {
+    var w: WrapperType[Int] = struct WrapperType { value: 7 };
+    printf("%i\n", w.describe());
+}

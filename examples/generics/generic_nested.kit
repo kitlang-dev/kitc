@@ -1,0 +1,10 @@
+include "stdio.h";
+
+struct Box[T] {
+    var value: T;
+}
+
+function main() {
+    var n: Box[Box[Int]] = struct Box { value: struct Box { value: 42 } };
+    printf("%i\n", n.value.value);
+}

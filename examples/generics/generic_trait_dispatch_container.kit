@@ -1,0 +1,21 @@
+include "stdio.h";
+
+trait Describable() {
+    function describe(): Int;
+}
+
+struct Container[T] {
+    var value: T;
+}
+
+implement Describable for Container[Int] {
+    function describe(): Int {
+        return this.value + 1;
+    }
+}
+
+function main() {
+    var c: Container[Int] = struct Container { value: 41 };
+    var d: Int = c.describe();
+    printf("%i\n", d);
+}

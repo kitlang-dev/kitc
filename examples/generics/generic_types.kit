@@ -1,0 +1,44 @@
+include "stdio.h";
+
+struct WrapperType[T] {
+    var innerValue: T;
+}
+
+enum WrapperEnum[T] {
+    OneValue(v: T);
+    TwoValues(a: T, b: T);
+}
+
+function main() {
+    // fully specified parameters
+    var a1: WrapperType[Bool] = struct WrapperType { innerValue: true };
+    var a2: WrapperType[Bool] = struct WrapperType { innerValue: false };
+    // parameters inferred from the initializer
+    var b: WrapperType = struct WrapperType { innerValue: 1 };
+    var c = struct WrapperType { innerValue: 2 };
+    var d = struct WrapperType { innerValue: "hello" };
+
+    printf("%i\n", a1.innerValue);
+    printf("%i\n", a2.innerValue);
+    printf("%i\n", b.innerValue);
+    printf("%i\n", c.innerValue);
+    printf("%s\n", d.innerValue);
+
+    // explicit, fully specified, and inferred enum parameters
+    var g: WrapperEnum[Int] = OneValue(1);
+    var h: WrapperEnum[Float] = TwoValues(2.0, 3.0);
+    var i: WrapperEnum = OneValue(4);
+
+    match g {
+        OneValue(a) => printf("one: %i\n", a)
+        default => printf("other\n")
+    }
+    match h {
+        TwoValues(a, b) => printf("two: %.1f, %.1f\n", a, b)
+        default => printf("other\n")
+    }
+    match i {
+        OneValue(a) => printf("one: %i\n", a)
+        default => printf("other\n")
+    }
+}

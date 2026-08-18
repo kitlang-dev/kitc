@@ -1,0 +1,22 @@
+include "stdio.h";
+
+trait Describable() {
+    function describe(): Int;
+}
+
+struct Point {
+    var x: Int;
+    var y: Int;
+}
+
+implement Describable for Point {
+    function describe(): Int {
+        return this.x + this.y;
+    }
+}
+
+function main() {
+    var p: Point = struct Point { x: 3, y: 4 };
+    var d: Int = p.describe();
+    printf("%i\n", d);
+}

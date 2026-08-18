@@ -1,0 +1,15 @@
+include "stdio.h";
+
+function intValue[T](v: T) {
+    printf("%i\n", v);
+}
+
+function callInt[T](v: T) {
+    // a generic calling a generic: the inner monomorph is realized on a
+    // later inference pass
+    intValue(v);
+}
+
+function main() {
+    callInt(7);
+}

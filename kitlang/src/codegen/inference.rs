@@ -1,10 +1,54 @@
-use std::collections::HashSet;
+//! Hindley-Milner type inference for Kit, with the generic monomorphization logic.
+//!
+//! This module contains `TypeInferencer`, which walks the merged program (assembled by
+//! `merge_modules_for_inference` in `frontend.rs`) and assigns a `TypeId` to every expression and
+//! declaration, resolving type variables by unification. It also holds the per-inference-pass
+//! monomorphization state (see `MonomorphState`).
+//!
+//! Generics & monomorphization
+//! -----------------------------------
+//! Kit supports generic structs, enums, and functions. Three specific words are used constantly
+//! and are easy to confuse. Here's their definition:
+//!
+//! - *Template*: a generic *definition*: a struct/enum/function declared with `type_params` (like
+//!   `struct Box[T]`). A template is never typed or emitted to C, it is only a "stencil" for
+//!   monomorphs. Templates are stashed during `register_templates` and skipped by ordinary
+//!   registration.
+//! - *Application*: a *use* of a template with type arguments, represented in
+//!   the type system as `Type::Instance { base, args }`.
+//!   Examples: `Box[Int]`, a bare `Box` whose arguments are inferred, or a call to a generic
+//!   function.
+//!   An application is the thing monomorphization resolves, it is the site, not the definition and
+//!   not the realization.
+//! - *Monomorph*: a *concrete realization* of a template: the template cloned with its type
+//!   parameters substituted by the application's arguments with its type parameters substituted by
+//!   the application's arguments, registered under the deterministic name `<base>_<hash>`
+//!   (see `monomorph_name` in `monomorph.rs`). Only monomorphs are typed and emitted.
+//!
+//! An application whose arguments are not yet all concrete gets a fresh *instance type variable*.
+//! It is recorded in two places: `MonomorphState::instance_types` (so unification can later bind
+//! it) and the *pending worklist*, the list of generic applications spotted during the current
+//! pass whose arguments have not been resolved yet.
+//!
+//! At the end of the pass, `generate_monomorphs` walks the worklist. For each entry whose
+//! arguments are now concrete it realizes the monomorph, binds the instance variables to
+//! `Named(monomorph)`, and (for calls to generic functions) rewrites the call site to the
+//! monomorph's name.
+//!
+//! Type Store & Unification
+//! -----------------------------------
+//! Type variables and their bindings live in `TypeStore`. `unify` follows bindings and
+//! special-cases generic applications: two applications of the same template unify their
+//! parameters pairwise, and an application unified with its own monomorph ties its parameters to
+//! the monomorph 's concrete arguments.
+use std::collections::{HashMap, HashSet};
 
 use super::ast::{
     Block, Expr, ExprKind, Function, GlobalDecl, Literal, MatchStmt, Program, Stmt, StmtKind,
 };
+use super::monomorph::{MonomorphState, PendingInstance, TemplateDef};
 use super::symbols::{EnumVariantInfo, SymbolTable};
-use super::type_ast::{EnumDefinition, FieldInit, StructDefinition};
+use super::type_ast::{EnumDefinition, EnumVariant, FieldInit, StructDefinition, TypeParam};
 use super::types::{
     AssignmentOperator, BinaryOperator, Type, TypeId, TypeStore, UnaryOperator, tuple_c_name,
 };
@@ -12,6 +56,33 @@ use super::{Field, TypeDef};
 use crate::codegen::parser::expr_pratt::callee_name;
 use crate::error::{CompilationError, CompileResult, ErrorContext, Span};
 use crate::type_err;
+
+/// Map a template's type parameters to the type ids assigned to this application.
+///
+/// `params` parallels `type_params` (one id per parameter); the map lets annotation substitution
+/// resolve `T`/`E` to the application's concrete (or freshly-unknown) type. Every generic path
+/// rebuilds this, so it is defined here once.
+fn param_id_map(type_params: &[TypeParam], params: &[TypeId]) -> HashMap<String, TypeId> {
+    type_params
+        .iter()
+        .zip(params.iter())
+        .map(|(tp, id)| (tp.name.clone(), *id))
+        .collect()
+}
+
+/// Find a variant by name within an enum template.
+///
+/// Shared by the constructor and pattern paths so the "unknown variant" error stays consistent.
+///
+/// # Errors
+///
+/// Returns `TypeError` if no variant named `name` exists.
+fn enum_variant<'a>(def: &'a EnumDefinition, name: &str) -> CompileResult<&'a EnumVariant> {
+    def.variants
+        .iter()
+        .find(|v| v.name == name)
+        .ok_or_else(|| type_err!("Unknown variant '{name}' in enum '{}'", def.name))
+}
 
 /// Type inference engine using Hindley-Milner algorithm.
 #[derive(Default)]
@@ -22,13 +93,19 @@ pub struct TypeInferencer {
     current_return_type: Option<TypeId>,
     source_file: String,
     source_text: String,
-    /// Distinct tuple shapes referenced in the program, collected so codegen can
-    /// emit one C struct definition per shape. Each entry is the generated C
-    /// struct name and its element types (recursively flattened for nesting).
+
+    /// Distinct tuple shapes referenced in the program, collected so codegen can emit one C struct
+    /// definition per shape. Each entry is the generated C struct name and its element types
+    /// (recursively flattened for nesting).
     tuple_shapes: Vec<(String, Vec<Type>)>,
-    /// Monotonic counter for synthesizing unique temporary identifiers
-    /// (e.g. tuple-destructure temporaries).
+
+    /// Monotonic counter for synthesizing unique temporary identifiers (e.g., tuple-destructure
+    /// temporaries)
     fresh_counter: u32,
+
+    /// Generic template definitions, instance type variables, the pending monomorph worklist, and
+    /// realized monomorphs.
+    pub(crate) monomorphs: MonomorphState,
 }
 
 impl TypeInferencer {
@@ -43,6 +120,7 @@ impl TypeInferencer {
             source_text: String::new(),
             tuple_shapes: Vec::new(),
             fresh_counter: 0,
+            monomorphs: MonomorphState::default(),
         }
     }
 
@@ -60,17 +138,17 @@ impl TypeInferencer {
 
     /// Record a tuple shape so its generated C struct is emitted exactly once.
     ///
-    /// Recurses into nested tuple element types so nested shapes are also
-    /// captured. Duplicates (same generated name) are stored only once.
+    /// Recurses into nested tuple element types so nested shapes are also captured. Duplicates
+    /// (same generated name) are stored only once.
     fn record_tuple(&mut self, elems: &[Type]) {
         let name = tuple_c_name(elems);
         if !self.tuple_shapes.iter().any(|(n, _)| n == &name) {
             let mut flattened = Vec::new();
-            for e in elems {
-                if let Type::Tuple(inner) = e {
+            for el in elems {
+                if let Type::Tuple(inner) = el {
                     self.record_tuple(inner);
                 }
-                flattened.push(e.clone());
+                flattened.push(el.clone());
             }
             self.tuple_shapes.push((name, flattened));
         }
@@ -129,15 +207,23 @@ impl TypeInferencer {
 
     /// Infer types for an entire program
     pub fn infer_program(&mut self, prog: &mut Program) -> CompileResult<()> {
-        self.register_enum_types(&prog.enums);
-        self.register_struct_types(&prog.structs);
+        // Per-pass monomorphization state is rebuilt every pass; the fixpoint driver re-runs
+        // `infer_program` until no monomorphs are realized.
+        self.begin_monomorph_pass();
+
+        // Generic definitions (non-empty `type_params`) are templates: they are not registered or
+        // typed directly (see `register_*`); only their monomorphs are.
+        self.register_enum_types(&prog.enums)?;
+        self.register_struct_types(&prog.structs)?;
         self.register_typedefs(&prog.typedefs);
 
         // Infer global variable types first (before functions)
         self.infer_globals(&mut prog.globals)?;
 
         for func in &mut prog.functions {
-            self.infer_function(func)?;
+            if func.type_params.is_empty() {
+                self.infer_function(func)?;
+            }
         }
         Ok(())
     }
@@ -150,9 +236,9 @@ impl TypeInferencer {
 
                 // Check if global has type annotation
                 // If annotated, unify annotation with inferred type from initializer and use
-                // annotation type as result (enforces type from annotation)
+                // annotation type as result (enforcing type from annotation)
                 global.inferred = if let Some(ann) = &global.annotation {
-                    let ann_ty = self.store.new_known(ann.clone());
+                    let ann_ty = self.type_id_from_annotation(Some(ann), &HashMap::new())?;
                     self.unify(ann_ty, init_ty)?;
                     init_expr.ty = ann_ty;
                     ann_ty
@@ -165,7 +251,7 @@ impl TypeInferencer {
                 // Declaration without initializer -> just use annotation
                 // Example: const int x;
                 // No expression to infer type from, so we directly use the annotation
-                global.inferred = self.store.new_known(ann.clone());
+                global.inferred = self.type_id_from_annotation(Some(ann), &HashMap::new())?;
                 self.symbols.define_global(&global.name, global.inferred);
             } else {
                 // The Kit grammar allows both `:` type_annotation and `= expr` to be absent
@@ -181,26 +267,40 @@ impl TypeInferencer {
     }
 
     /// Register enum types in the type store and symbol table
-    fn register_enum_types(&mut self, enums: &[EnumDefinition]) {
+    fn register_enum_types(&mut self, enums: &[EnumDefinition]) -> CompileResult<()> {
         for enum_def in enums {
-            self.symbols.define_enum(enum_def.clone());
-            for variant in &enum_def.variants {
-                let mut resolved_variant = variant.clone();
-                for arg in &mut resolved_variant.args {
-                    arg.ty = self.store.known_or_unknown(arg.annotation.as_ref());
-                }
-                self.symbols.define_enum_variant(&resolved_variant);
+            // Generic (template) enums are not registered until monomorphized.
+            if !enum_def.type_params.is_empty() {
+                continue;
             }
+            let mut resolved = enum_def.clone();
+            for variant in &mut resolved.variants {
+                for arg in &mut variant.args {
+                    arg.ty =
+                        self.type_id_from_annotation(arg.annotation.as_ref(), &HashMap::new())?;
+                }
+                self.symbols.define_enum_variant(variant);
+            }
+            self.symbols.define_enum(resolved);
         }
+        Ok(())
     }
 
     /// Register struct types in the type store and symbol table
-    fn register_struct_types(&mut self, structs: &[StructDefinition]) {
+    fn register_struct_types(&mut self, structs: &[StructDefinition]) -> CompileResult<()> {
         for struct_def in structs {
+            // Generic (template) structs are not registered: they have no concrete layout until
+            // monomorphized
+            if !struct_def.type_params.is_empty() {
+                continue;
+            }
+
             // Build field type list and update field types
             let mut updated_fields = Vec::new();
             for field in &struct_def.fields {
-                let field_type_id = self.store.known_or_unknown(field.annotation.as_ref());
+                let field_type_id =
+                    self.type_id_from_annotation(field.annotation.as_ref(), &HashMap::new())?;
+
                 updated_fields.push(Field {
                     name: field.name.clone(),
                     ty: field_type_id,
@@ -213,6 +313,7 @@ impl TypeInferencer {
             // Create updated struct definition with resolved field types
             let updated_struct_def = StructDefinition {
                 name: struct_def.name.clone(),
+                type_params: struct_def.type_params.clone(),
                 fields: updated_fields,
                 is_public: struct_def.is_public,
                 metadata: struct_def.metadata.clone(),
@@ -235,6 +336,7 @@ impl TypeInferencer {
             // Register updated struct in symbol table for field lookups
             self.symbols.define_struct(updated_struct_def);
         }
+        Ok(())
     }
 
     /// Register typedef aliases in the type store so they can be resolved during unification.
@@ -252,12 +354,15 @@ impl TypeInferencer {
 
         // Infer parameter types (fresh unknowns if unannotated)
         for param in &mut func.params {
-            param.ty = self.store.known_or_unknown(param.annotation.as_ref());
+            param.ty = self.type_id_from_annotation(param.annotation.as_ref(), &HashMap::new())?;
             self.symbols.define_var(&param.name, param.ty);
         }
 
         // Infer return type
-        func.inferred_return = self.store.known_or_unknown_some(func.return_type.as_ref());
+        func.inferred_return = match func.return_type.as_ref() {
+            Some(r) => Some(self.type_id_from_annotation(Some(r), &HashMap::new())?),
+            None => Some(self.store.new_unknown()),
+        };
 
         self.current_return_type = func.inferred_return;
 
@@ -268,6 +373,7 @@ impl TypeInferencer {
         // void. Use find_rep since is_unknown doesn't follow bindings.
         if let Some(ret_id) = func.inferred_return {
             let rep = self.store.find_rep(ret_id);
+
             if self.store.is_unknown(rep) {
                 let void_id = self.store.new_known(Type::Void);
                 self.store.unify(ret_id, void_id)?;
@@ -381,7 +487,7 @@ impl TypeInferencer {
                     let init_ty = self.infer_expr(init_expr)?;
 
                     *inferred = if let Some(ann) = annotation {
-                        let ann_ty = self.store.new_known(ann.clone());
+                        let ann_ty = self.type_id_from_annotation(Some(ann), &HashMap::new())?;
                         self.unify(ann_ty, init_ty)?;
                         init_expr.ty = ann_ty;
                         ann_ty
@@ -392,7 +498,7 @@ impl TypeInferencer {
                     self.symbols.define_var(name, *inferred);
                 } else if let Some(ann) = annotation {
                     // Declaration without initializer -> just use annotation
-                    *inferred = self.store.new_known(ann.clone());
+                    *inferred = self.type_id_from_annotation(Some(ann), &HashMap::new())?;
                     self.symbols.define_var(name, *inferred);
                 } else {
                     return Err(type_err!(
@@ -549,11 +655,18 @@ impl TypeInferencer {
             ExprKind::Call { callee, args } => {
                 // Enum constructor pattern: `SomeVal(v)` or `SomeVal(1)`
                 if let ExprKind::Identifier { name: variant_name } = &callee.kind
-                    && let Some(info) = self
-                        .symbols
-                        .lookup_enum_variant_by_simple_name(variant_name)
-                        .cloned()
+                    && let Some(info) = self.variant_info_by_simple_name(variant_name)
                 {
+                    // Generic (template) enums create their own application; the
+                    // caller unifies its instance variable with the matched value.
+                    if self.is_template_enum(&info.enum_name) {
+                        return self.infer_generic_enum_pattern(
+                            &mut pattern.ty,
+                            &info.enum_name,
+                            &info.variant_name,
+                            args,
+                        );
+                    }
                     let enum_ty = self.store.new_known(Type::Named(info.enum_name.clone()));
                     pattern.ty = enum_ty;
                     let arg_types = info.arg_types.clone();
@@ -567,6 +680,214 @@ impl TypeInferencer {
             }
             _ => self.infer_expr(pattern),
         }
+    }
+
+    /// Look up a generic enum template by declared name.
+    ///
+    /// Returns the cloned `EnumDefinition`; every generic-enum path uses this so
+    /// the "missing template" internal error is reported in one place.
+    ///
+    /// # Errors
+    /// Returns `TypeError` if `base` is not a registered enum template.
+    fn template_enum(&self, base: &str) -> CompileResult<EnumDefinition> {
+        match self.monomorphs.templates.get(base).cloned() {
+            Some((_, TemplateDef::Enum(def))) => Ok(def),
+            _ => Err(type_err!("internal error: missing template '{base}'")),
+        }
+    }
+
+    /// Look up a generic struct template by declared name.
+    ///
+    /// Returns the cloned `StructDefinition`; mirrors `template_enum` for structs.
+    ///
+    /// # Errors
+    /// Returns `TypeError` if `base` is not a registered struct template.
+    fn template_struct(&self, base: &str) -> CompileResult<StructDefinition> {
+        match self.monomorphs.templates.get(base).cloned() {
+            Some((_, TemplateDef::Struct(def))) => Ok(def),
+            _ => Err(type_err!("internal error: missing template '{base}'")),
+        }
+    }
+
+    /// Look up a generic function template by declared name.
+    ///
+    /// Returns the cloned `Function`; mirrors `template_enum` for functions.
+    ///
+    /// # Errors
+    /// Returns `TypeError` if `base` is not a registered function template.
+    fn template_function(&self, base: &str) -> CompileResult<Function> {
+        match self.monomorphs.templates.get(base).cloned() {
+            Some((_, TemplateDef::Function(def))) => Ok(def),
+            _ => Err(type_err!("internal error: missing template '{base}'")),
+        }
+    }
+
+    /// Infer and unify a generic enum's constructor/pattern arguments.
+    ///
+    /// Each supplied argument's expected type comes from the variant field's
+    /// annotation via the application's `id_map`. `is_pattern` selects pattern
+    /// inference (`infer_pattern`, which binds identifiers rather than evaluating
+    /// a value) versus expression inference (`infer_expr`); only the constructor
+    /// path records the resolved type back onto the argument.
+    ///
+    /// # Errors
+    /// Returns `TypeError` on an argument/field type mismatch.
+    fn unify_variant_args(
+        &mut self,
+        variant: &EnumVariant,
+        args: &mut [Expr],
+        id_map: &HashMap<String, TypeId>,
+        is_pattern: bool,
+    ) -> CompileResult<()> {
+        for (arg, field) in args.iter_mut().zip(variant.args.iter()) {
+            let expected = self.type_id_from_annotation(field.annotation.as_ref(), id_map)?;
+            if is_pattern {
+                let arg_ty = self.infer_pattern(arg)?;
+                self.unify(expected, arg_ty)?;
+            } else {
+                let arg_ty = self.infer_expr(arg)?;
+                self.unify(arg_ty, expected)?;
+                arg.ty = expected;
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate, default-fill, and type-check struct field initializers.
+    ///
+    /// Shared by the concrete and generic struct-init paths; the only difference
+    /// is how an expected field type is obtained. With `id_map = Some`, fields use
+    /// the application's substituted template annotation (generic); with `None`,
+    /// fields use their registered annotation, or the value's inferred type when
+    /// no annotation is present (concrete).
+    ///
+    /// # Errors
+    /// Returns `TypeError` for an unknown field, a missing non-default field, or a
+    /// value/field type mismatch.
+    fn validate_and_infer_struct_fields(
+        &mut self,
+        def_fields: &[Field],
+        fields: &mut Vec<FieldInit>,
+        id_map: Option<&HashMap<String, TypeId>>,
+        struct_name: &str,
+    ) -> CompileResult<()> {
+        // Unknown-field and required-field checks run before defaults are
+        // injected, so injected fields never need re-validation.
+        let provided: HashSet<String> = fields.iter().map(|f| f.name.clone()).collect();
+        for fi in fields.iter() {
+            if !def_fields.iter().any(|f| f.name == fi.name) {
+                return Err(type_err!(
+                    "Struct '{struct_name}' has no field '{}'",
+                    fi.name
+                ));
+            }
+        }
+        for fd in def_fields {
+            if !provided.contains(&fd.name) && fd.default.is_none() {
+                return Err(type_err!(
+                    "Struct '{struct_name}' field '{}' has no default value and was not provided in initialization",
+                    fd.name
+                ));
+            }
+        }
+        // Inject default values for missing optional fields.
+        for fd in def_fields {
+            if !provided.contains(&fd.name)
+                && let Some(default) = &fd.default
+            {
+                fields.push(FieldInit {
+                    name: fd.name.clone(),
+                    value: default.clone(),
+                });
+            }
+        }
+        for fi in fields.iter_mut() {
+            let fd = def_fields
+                .iter()
+                .find(|f| f.name == fi.name)
+                .ok_or_else(|| type_err!("Struct field '{}' not found in definition", fi.name))?;
+            let inferred = self.infer_expr(&mut fi.value)?;
+            let expected = match id_map {
+                // Generic field: expect the application's substituted annotation.
+                Some(im) => self.type_id_from_annotation(fd.annotation.as_ref(), im)?,
+                // Concrete field: expect the declared type, or the inferred type
+                // when the field carries no annotation.
+                None => match &fd.annotation {
+                    Some(ann) => self.store.new_known(ann.clone()),
+                    None => inferred,
+                },
+            };
+            self.unify(inferred, expected)?;
+            fi.value.ty = expected;
+        }
+        Ok(())
+    }
+
+    /// Type an enum-constructor pattern against a generic (template) enum.
+    ///
+    /// Creates fresh parameter variables per application (unified with the matched
+    /// value's parameters by the caller) so the pattern's bindings share the
+    /// subject's parameters.
+    ///
+    /// # Errors
+    /// Returns an internal `TypeError` if the template is missing.
+    fn infer_generic_enum_pattern(
+        &mut self,
+        pattern_ty: &mut TypeId,
+        enum_base: &str,
+        variant_name: &str,
+        args: &mut [Expr],
+    ) -> Result<TypeId, CompilationError> {
+        let (params, pattern_ty_instance) =
+            self.instance_params_and_type(enum_base, &[], &HashMap::new())?;
+        let def = self.template_enum(enum_base)?;
+        let variant = enum_variant(&def, variant_name)?;
+        let id_map = param_id_map(&def.type_params, &params);
+        self.unify_variant_args(variant, args, &id_map, true)?;
+        *pattern_ty = pattern_ty_instance;
+        Ok(pattern_ty_instance)
+    }
+
+    /// Concrete argument types of a generic-enum variant pattern.
+    ///
+    /// Taken from the pattern's own instance application when its parameters match the match
+    /// subject, or from the concrete monomorph the pattern already resolved to. Returns `None` when
+    /// the application is still unknown.
+    fn generic_variant_arg_types(
+        &mut self,
+        pattern_ty: TypeId,
+        info: &EnumVariantInfo,
+    ) -> CompileResult<Option<Vec<TypeId>>> {
+        let rep = self.store.find_rep(pattern_ty);
+        if let Some(inst) = self.monomorphs.instance_types.get(&rep).cloned() {
+            let Some((_, TemplateDef::Enum(def))) =
+                self.monomorphs.templates.get(&inst.base).cloned()
+            else {
+                return Ok(None);
+            };
+            let variant = match def.variants.iter().find(|v| v.name == info.variant_name) {
+                Some(v) => v.clone(),
+                None => return Ok(None),
+            };
+            let id_map = param_id_map(&def.type_params, &inst.params);
+            let mut tys = Vec::new();
+            for field in &variant.args {
+                tys.push(self.type_id_from_annotation(field.annotation.as_ref(), &id_map)?);
+            }
+            return Ok(Some(tys));
+        }
+        // The pattern unified with a concrete monomorph already.
+        if let Ok(Type::Named(name)) = self.store.resolve(rep)
+            && self.is_monomorph_name(&name)
+            && let Some(ed) = self.symbols.lookup_enum(&name)
+        {
+            let variant = match ed.variants.iter().find(|v| v.name == info.variant_name) {
+                Some(v) => v,
+                None => return Ok(None),
+            };
+            return Ok(Some(variant.args.iter().map(|a| a.ty).collect()));
+        }
+        Ok(None)
     }
 
     /// Walk a pattern expression tree and bind any identifiers as const variables.
@@ -585,20 +906,37 @@ impl TypeInferencer {
             }
             ExprKind::Call { callee, args } => {
                 if let ExprKind::Identifier { name: variant_name } = &callee.kind
-                    && let Some(expected_types) = self
-                        .symbols
-                        .lookup_enum_variant_by_simple_name(variant_name)
-                        .map(|info| info.arg_types.to_vec())
+                    && let Some(info) = self.variant_info_by_simple_name(variant_name)
                 {
-                    if args.len() != expected_types.len() {
+                    // Generic (template) enums: bind against the argument types
+                    // of the pattern's own application, so bindings share the
+                    // match subject's parameters.
+                    if self.is_template_enum(&info.enum_name) {
+                        let expected_types = self.generic_variant_arg_types(pattern.ty, &info)?;
+                        if let Some(expected_types) = expected_types {
+                            if args.len() != expected_types.len() {
+                                return Err(type_err!(
+                                    "pattern '{}' has {} args but variant expects {}",
+                                    variant_name,
+                                    args.len(),
+                                    expected_types.len(),
+                                ));
+                            }
+                            for (arg, &expected_ty) in args.iter().zip(expected_types.iter()) {
+                                self.extract_pattern_bindings(arg, expected_ty)?;
+                            }
+                            return Ok(());
+                        }
+                    }
+                    if args.len() != info.arg_types.len() {
                         return Err(type_err!(
                             "pattern '{}' has {} args but variant expects {}",
                             variant_name,
                             args.len(),
-                            expected_types.len(),
+                            info.arg_types.len(),
                         ));
                     }
-                    for (arg, &expected_ty) in args.iter().zip(expected_types.iter()) {
+                    for (arg, &expected_ty) in args.iter().zip(info.arg_types.iter()) {
                         self.extract_pattern_bindings(arg, expected_ty)?;
                     }
                     return Ok(());
@@ -820,13 +1158,38 @@ impl TypeInferencer {
 
     fn is_call_enum_constructor(&self, expr: &Expr) -> bool {
         match &expr.kind {
-            ExprKind::Call { callee, .. } => callee_name(callee).is_some_and(|name| {
-                self.symbols
-                    .lookup_enum_variant_by_simple_name(&name)
-                    .is_some()
-            }),
+            ExprKind::Call { callee, .. } => callee_name(callee)
+                .is_some_and(|name| self.variant_info_by_simple_name(&name).is_some()),
             _ => false,
         }
+    }
+
+    /// Look up an enum variant by simple name.
+    ///
+    /// Constructor calls and patterns resolve to the *template* declaration of a generic enum
+    /// (never to a monomorph, which is selected by the expression's type), so templates are
+    /// preferred here deterministically; the symbol table would otherwise return whichever
+    /// registered first (HashMap iteration order).
+    fn variant_info_by_simple_name(&self, name: &str) -> Option<EnumVariantInfo> {
+        if let Some((_, (_, TemplateDef::Enum(def)))) = self.monomorphs.templates.iter().find(
+            |(_, (_, def))| {
+                matches!(def, TemplateDef::Enum(e) if e.variants.iter().any(|v| v.name == name))
+            },
+        ) {
+            return def
+                .variants
+                .iter()
+                .find(|v| v.name == name)
+                .map(|v| EnumVariantInfo {
+                    enum_name: def.name.clone(),
+                    variant_name: v.name.clone(),
+                    arg_types: v.args.iter().map(|a| a.ty).collect(),
+                    has_defaults: v.args.iter().any(|a| a.default.is_some()),
+                });
+        }
+        self.symbols
+            .lookup_enum_variant_by_simple_name(name)
+            .cloned()
     }
 
     fn infer_identifier(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
@@ -840,10 +1203,14 @@ impl TypeInferencer {
         } else if let Some(var_ty) = self.symbols.lookup_var(&name) {
             expr.ty = var_ty;
             Ok(var_ty)
-        } else if let Some(variant_info) = self.symbols.lookup_enum_variant(&name) {
-            let enum_ty = self
-                .store
-                .new_known(Type::Named(variant_info.enum_name.clone()));
+        } else if let Some(variant_info) = self.symbols.lookup_enum_variant(&name).cloned() {
+            let enum_ty = if self.is_template_enum(&variant_info.enum_name) {
+                self.instance_params_and_type(&variant_info.enum_name, &[], &HashMap::new())?
+                    .1
+            } else {
+                self.store
+                    .new_known(Type::Named(variant_info.enum_name.clone()))
+            };
             let span = expr.span.clone();
             expr.ty = enum_ty;
             expr.kind = ExprKind::EnumVariant {
@@ -867,8 +1234,24 @@ impl TypeInferencer {
                     break;
                 }
             }
+            // Generic (template) enums are stashed, not in the symbol table.
+            if found.is_none() {
+                for (enum_name, (_, def)) in &self.monomorphs.templates {
+                    if let TemplateDef::Enum(ed) = def
+                        && ed.variants.iter().any(|v| v.name == name)
+                    {
+                        found = Some(enum_name.clone());
+                        break;
+                    }
+                }
+            }
             if let Some(enum_name) = found {
-                let enum_ty = self.store.new_known(Type::Named(enum_name.clone()));
+                let enum_ty = if self.is_template_enum(&enum_name) {
+                    self.instance_params_and_type(&enum_name, &[], &HashMap::new())?
+                        .1
+                } else {
+                    self.store.new_known(Type::Named(enum_name.clone()))
+                };
                 let span = expr.span.clone();
                 expr.ty = enum_ty;
                 expr.kind = ExprKind::EnumVariant {
@@ -909,13 +1292,22 @@ impl TypeInferencer {
         };
         let callee_str = callee_name(callee).expect("guard ensures this is valid");
         let variant_info = self
-            .symbols
-            .lookup_enum_variant_by_simple_name(&callee_str)
+            .variant_info_by_simple_name(&callee_str)
             .expect("guard ensures this exists");
+
+        // Generic (template) enum: instantiate per application.
+        if self.is_template_enum(&variant_info.enum_name) {
+            return self.infer_generic_enum_ctor(
+                &mut expr.ty,
+                &variant_info.enum_name,
+                &variant_info.variant_name,
+                args,
+            );
+        }
         let args_clone = args.clone();
         let enum_def = self.symbols.lookup_enum(&variant_info.enum_name).cloned();
         let mut resolved_args = if let Some(ref ed) = enum_def {
-            Self::resolve_default_args(variant_info, ed, &args_clone)?
+            Self::resolve_default_args(&variant_info, ed, &args_clone)?
         } else {
             args_clone
         };
@@ -943,7 +1335,110 @@ impl TypeInferencer {
         Ok(enum_ty)
     }
 
+    /// Infer an enum constructor call against a generic (template) enum, e.g. `OneValue(1)`.
+    ///
+    /// The variant's fields are substituted with fresh parameter variables (filled by the
+    /// arguments); the call's type is the instance variable, unified with whatever
+    /// annotation/initializer context references it.
+    ///
+    /// # Errors
+    /// Returns an internal `TypeError` if the template is missing.
+    fn infer_generic_enum_ctor(
+        &mut self,
+        expr_ty: &mut TypeId,
+        enum_base: &str,
+        variant_name: &str,
+        args: &mut Vec<Expr>,
+    ) -> Result<TypeId, CompilationError> {
+        let (params, instance_ty) =
+            self.instance_params_and_type(enum_base, &[], &HashMap::new())?;
+        let def = self.template_enum(enum_base)?;
+        let variant = enum_variant(&def, variant_name)?;
+
+        let mut resolved_args = Self::resolve_default_args(
+            &EnumVariantInfo {
+                enum_name: enum_base.to_string(),
+                variant_name: variant_name.to_string(),
+                arg_types: variant.args.iter().map(|a| a.ty).collect(),
+                has_defaults: variant.args.iter().any(|a| a.default.is_some()),
+            },
+            &def,
+            args,
+        )?;
+
+        if resolved_args.len() != variant.args.len() {
+            return Err(type_err!(
+                "Enum variant '{}' expects {} arguments, got {}",
+                variant_name,
+                variant.args.len(),
+                resolved_args.len()
+            ));
+        }
+
+        let id_map = param_id_map(&def.type_params, &params);
+        self.unify_variant_args(variant, &mut resolved_args, &id_map, false)?;
+        *args = resolved_args;
+
+        *expr_ty = instance_ty;
+        Ok(instance_ty)
+    }
+
+    /// Static trait-method dispatch: rewrite `receiver.method(args)` to a direct call to the
+    /// mangled impl-method symbol.
+    ///
+    /// Returns `true` if a rewrite happened (the caller should re-run `infer_function_call` on the
+    /// rewritten expression). Returns `false` if the callee is not a field-access method call, or
+    /// the receiver's type has no impl providing `method`, in which case ordinary handling applies.
+    fn try_rewrite_method_call(&mut self, expr: &mut Expr) -> CompileResult<bool> {
+        let ExprKind::Call { callee, args } = &mut expr.kind else {
+            return Ok(false);
+        };
+        let ExprKind::FieldAccess {
+            expr: receiver,
+            field_name,
+        } = &mut callee.kind
+        else {
+            return Ok(false);
+        };
+
+        // Infer the receiver to learn its concrete type. If it isn't a value (e.g. a module-
+        // qualified path like `module.func`), this isn't a trait-method dispatch; fall through to
+        // ordinary call handling rather than resolving a module name as a value.
+        let recv_ty = match self.infer_expr(receiver) {
+            Ok(t) => t,
+            Err(_) => return Ok(false),
+        };
+        let recv_type = self.store.resolve(recv_ty)?;
+        let Some(symbol) = self.lookup_method(&recv_type, field_name) else {
+            return Ok(false);
+        };
+
+        // Rewrite to a direct call `symbol(receiver, args...)`, where `receiver` becomes the
+        // synthesized `this` argument. The mangled symbol is already in the symbol table.
+        let receiver_expr = (**receiver).clone();
+        **callee = Expr::new(
+            ExprKind::Identifier {
+                name: symbol.clone(),
+            },
+            self.store.new_unknown(),
+            Span::default(),
+        );
+        let mut new_args = Vec::with_capacity(args.len() + 1);
+        new_args.push(receiver_expr);
+        new_args.extend(std::mem::take(args));
+        *args = new_args;
+        Ok(true)
+    }
+
     fn infer_function_call(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
+        // A call `receiver.method(args)` where the receiver's type implements a trait
+        // providing `method` is static dispatch. Rewrite it to a direct call to the mangled impl
+        // method, passing the receiver as the synthesized `this` argument. If no impl method
+        // matches, fall through to ordinary call handling.
+        if self.try_rewrite_method_call(expr)? {
+            return self.infer_function_call(expr);
+        }
+
         let ExprKind::Call { callee, args } = &mut expr.kind else {
             unreachable!("infer_function_call called on non-Call");
         };
@@ -953,6 +1448,14 @@ impl TypeInferencer {
             && let Some((param_tys, ret_ty)) = self.symbols.lookup_function(&name)
         {
             return self.infer_call_with_sig(&name, param_tys, ret_ty, args, &mut expr.ty);
+        }
+
+        // Generic (template) function: instantiate its type parameters against
+        // the argument types, exactly like the reference's `makeGeneric`.
+        if let Some(name) = callee_name(callee)
+            && self.is_template_function(&name)
+        {
+            return self.infer_generic_function_call(&mut expr.ty, args, &name);
         }
 
         // Indirect call: infer callee type and check callability.
@@ -1061,6 +1564,92 @@ impl TypeInferencer {
 
         *call_ty = ret_ty;
         Ok(ret_ty)
+    }
+
+    /// Infer a call to a generic (template) function.
+    ///
+    /// Mirrors the reference's `makeGeneric`: one fresh type variable per parameter, arguments
+    /// unified against the substituted parameter types, and a pending monomorph whose `call_return`
+    /// lets `generate_monomorphs` rewrite this call site once the parameters resolve.
+    ///
+    /// # Errors
+    /// Returns an internal `TypeError` if the template is missing.
+    fn infer_generic_function_call(
+        &mut self,
+        expr_ty: &mut TypeId,
+        args: &mut [Expr],
+        name: &str,
+    ) -> Result<TypeId, CompilationError> {
+        let def = self.template_function(name)?;
+
+        // Fresh type variable per type parameter, then a substituted signature.
+        let mut id_map: HashMap<String, TypeId> = HashMap::new();
+        for tp in &def.type_params {
+            id_map.insert(tp.name.clone(), self.store.new_unknown());
+        }
+        let sig: Vec<TypeId> = def
+            .params
+            .iter()
+            .map(|p| self.type_id_from_annotation(p.annotation.as_ref(), &id_map))
+            .collect::<CompileResult<_>>()?;
+
+        if args.len() != sig.len() {
+            return Err(type_err!(
+                "Function '{name}' expects {} arguments, got {}",
+                sig.len(),
+                args.len()
+            ));
+        }
+        for (arg, param_ty) in args.iter_mut().zip(sig.iter()) {
+            let arg_ty = self.infer_expr(arg)?;
+            self.unify(arg_ty, *param_ty)?;
+            arg.ty = *param_ty;
+        }
+
+        // Default specialization: a type parameter with no value inferred from the arguments but
+        // a trait constraint that has a `default Trait as Type` declaration is bound to that type.
+        // Applied here (after argument unification) so only genuinely-stuck parameters are
+        // defaulted, and the pending application resolves to a concrete monomorph this pass.
+        for tp in &def.type_params {
+            let Some(var_id) = id_map.get(&tp.name).copied() else {
+                continue;
+            };
+            if self.store.is_unknown(var_id)
+                && let Some(default_ty) = crate::codegen::specialize::default_for_constraints(
+                    &tp.constraints,
+                    &self.monomorphs.defaults,
+                )
+            {
+                self.store.bind_if_unbound(var_id, default_ty);
+            }
+        }
+
+        // Substituted return type (void when the template declares none).
+        let ret_id = match &def.return_type {
+            Some(r) => self.type_id_from_annotation(Some(r), &id_map)?,
+            None => self.store.new_known(Type::Void),
+        };
+
+        let params: Vec<TypeId> = def
+            .type_params
+            .iter()
+            .map(|tp| {
+                id_map
+                    .get(&tp.name)
+                    .copied()
+                    .expect("type parameter bound above")
+            })
+            .collect();
+        self.monomorphs
+            .pending
+            .push(super::monomorph::PendingGeneric {
+                base: name.to_string(),
+                params,
+                call_return: Some(ret_id),
+            });
+
+        *expr_ty = ret_id;
+        Ok(ret_id)
     }
 
     fn infer_unary_op(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
@@ -1181,92 +1770,88 @@ impl TypeInferencer {
             unreachable!("infer_struct_init called on non-StructInit");
         };
 
+        let Some(st) = struct_type.as_ref() else {
+            return Err(type_err!("StructInit missing type annotation"));
+        };
+
+        // Generic structs (templates) instantiate through `makeGeneric`-style
+        // parameter binding; concrete structs use the registered definition.
+        let base = match st {
+            Type::Named(name) => Some(name.clone()),
+            Type::Instance { base, .. } => Some(base.clone()),
+            _ => None,
+        };
+        if let Some(base) = base
+            && self.is_template_struct(&base)
+        {
+            return self.infer_generic_struct_init(&mut expr.ty, &base, st, fields);
+        }
+
         let resolved_ty = if let Some(ref st) = *struct_type {
             self.store.new_known(st.clone())
         } else {
             return Err(type_err!("StructInit missing type annotation"));
         };
 
-        // resolve struct type from annotation
+        // resolve struct type from annotation. Clone so the immutable borrow of
+        // `self.symbols` is released before the mutable field-inference pass.
         let struct_def = {
             let resolved = self.store.resolve(resolved_ty)?;
             match resolved {
                 Type::Named(name) => self
                     .symbols
                     .lookup_struct(&name)
-                    .ok_or_else(|| type_err!("Unknown struct type '{name}'"))?,
+                    .ok_or_else(|| type_err!("Unknown struct type '{name}'"))?
+                    .clone(),
                 Type::Struct { name, .. } => self
                     .symbols
                     .lookup_struct(&name)
-                    .ok_or_else(|| type_err!("Unknown struct type '{name}'"))?,
+                    .ok_or_else(|| type_err!("Unknown struct type '{name}'"))?
+                    .clone(),
                 _ => return Err(type_err!("StructInit requires a struct type")),
             }
         };
 
-        // validate provided field names + check required fields
-        let provided_field_names: HashSet<String> = fields.iter().map(|f| f.name.clone()).collect();
-
-        for field_init in fields.iter() {
-            if !struct_def.fields.iter().any(|f| f.name == field_init.name) {
-                return Err(type_err!(
-                    "Struct '{}' has no field '{}'",
-                    struct_def.name,
-                    field_init.name
-                ));
-            }
-        }
-
-        for field_def in &struct_def.fields {
-            if !provided_field_names.contains(&field_def.name) && field_def.default.is_none() {
-                return Err(type_err!(
-                    "Struct '{}' field '{}' has no default value and was not provided in initialization",
-                    struct_def.name,
-                    field_def.name
-                ));
-            }
-        }
-
-        let field_infos: Vec<(String, Option<Type>, Option<Expr>)> = struct_def
-            .fields
-            .iter()
-            .map(|f| (f.name.clone(), f.annotation.clone(), f.default.clone()))
-            .collect();
-
-        // inject default values for missing optional fields
-        for field_info in &field_infos {
-            let field_name = &field_info.0;
-            if !provided_field_names.contains(field_name)
-                && let Some(default_expr) = &field_info.2
-            {
-                fields.push(FieldInit {
-                    name: field_name.clone(),
-                    value: default_expr.clone(),
-                });
-            }
-        }
-
-        // infer and unify each field value against its declared type
-        for field_init in fields.iter_mut() {
-            let field_info = field_infos
-                .iter()
-                .find(|fi| fi.0 == field_init.name)
-                .ok_or_else(|| {
-                    type_err!("Struct field '{}' not found in definition", field_init.name)
-                })?;
-
-            let inferred_ty = self.infer_expr(&mut field_init.value)?;
-
-            let expected_ty = if let Some(ref ann) = field_info.1 {
-                self.store.new_known(ann.clone())
-            } else {
-                inferred_ty
-            };
-
-            self.unify(inferred_ty, expected_ty)?;
-        }
+        // Concrete struct: validate, default-fill, and type-check fields against
+        // their registered annotations.
+        self.validate_and_infer_struct_fields(&struct_def.fields, fields, None, &struct_def.name)?;
 
         expr.ty = resolved_ty;
         Ok(resolved_ty)
+    }
+
+    /// Infer initialization of a generic (template) struct, e.g.
+    /// `struct WrapperType { innerValue: 2 }`.
+    ///
+    /// Supplied type arguments (from a `WrapperType[Int]` annotation; partial applications
+    /// allowed) are bound first; missing parameters become fresh unknowns filled by the field
+    /// initializers.
+    ///
+    /// # Errors
+    /// Returns an internal `TypeError` if the template is missing.
+    fn infer_generic_struct_init(
+        &mut self,
+        expr_ty: &mut TypeId,
+        base: &str,
+        struct_type: &Type,
+        fields: &mut Vec<FieldInit>,
+    ) -> Result<TypeId, CompilationError> {
+        let supplied: Vec<Type> = match struct_type {
+            Type::Instance { args, .. } => args.clone(),
+            _ => vec![],
+        };
+        let (params, instance_ty) =
+            self.instance_params_and_type(base, &supplied, &HashMap::new())?;
+
+        let def = self.template_struct(base)?;
+        let id_map = param_id_map(&def.type_params, &params);
+
+        // Generic struct: same field rules as the concrete path, but each field's
+        // expected type is the application's substituted template annotation.
+        self.validate_and_infer_struct_fields(&def.fields, fields, Some(&id_map), &def.name)?;
+
+        *expr_ty = instance_ty;
+        Ok(instance_ty)
     }
 
     fn infer_field_access(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
@@ -1279,6 +1864,13 @@ impl TypeInferencer {
         };
 
         let container_ty = self.infer_expr(inner)?;
+
+        // Generic (template) instance (parameters may still be unknown mid-pass):
+        // resolve the field type through the template's substituted definition.
+        let rep = self.store.find_rep(container_ty);
+        if let Some(inst) = self.monomorphs.instance_types.get(&rep).cloned() {
+            return self.infer_field_access_in_instance(&mut expr.ty, field_name, &inst);
+        }
 
         let resolved = self.store.resolve(container_ty)?;
 
@@ -1353,6 +1945,55 @@ impl TypeInferencer {
         Ok(field_type_id)
     }
 
+    /// Infer field access on a generic instance, e.g. `b.innerValue` for a bare `WrapperType`.
+    ///
+    /// The field's type is the substituted template annotation, keeping self-referential types
+    /// (e.g. `var x: Box;` with `x.value: Box[T]`) consistent with the application's parameters.
+    ///
+    /// # Errors
+    /// Returns `TypeError` if the field is absent or its type cannot be resolved.
+    fn infer_field_access_in_instance(
+        &mut self,
+        expr_ty: &mut TypeId,
+        field_name: &str,
+        inst: &PendingInstance,
+    ) -> Result<TypeId, CompilationError> {
+        if let Some((_, TemplateDef::Struct(def))) =
+            self.monomorphs.templates.get(&inst.base).cloned()
+        {
+            let id_map = param_id_map(&def.type_params, &inst.params);
+            let field = def
+                .fields
+                .iter()
+                .find(|f| f.name == field_name)
+                .ok_or_else(|| type_err!("Struct '{}' has no field '{}'", def.name, field_name))?;
+            let field_ty = self.type_id_from_annotation(field.annotation.as_ref(), &id_map)?;
+            *expr_ty = field_ty;
+            return Ok(field_ty);
+        }
+        if let Some((_, TemplateDef::Enum(ed))) = self.monomorphs.templates.get(&inst.base).cloned()
+        {
+            let variant = ed
+                .variants
+                .iter()
+                .find(|v| v.args.iter().any(|a| a.name == *field_name))
+                .ok_or_else(|| type_err!("Enum '{}' has no field '{}'", ed.name, field_name))?;
+            let id_map = param_id_map(&ed.type_params, &inst.params);
+            let field = variant
+                .args
+                .iter()
+                .find(|a| a.name == *field_name)
+                .expect("variant field presence checked above");
+            let field_ty = self.type_id_from_annotation(field.annotation.as_ref(), &id_map)?;
+            *expr_ty = field_ty;
+            return Ok(field_ty);
+        }
+        Err(type_err!(
+            "Cannot access field on unknown type '{}'",
+            inst.base
+        ))
+    }
+
     fn infer_enum_variant(&mut self, expr: &mut Expr) -> Result<TypeId, CompilationError> {
         let ExprKind::EnumVariant {
             enum_name,
@@ -1361,6 +2002,15 @@ impl TypeInferencer {
         else {
             unreachable!("infer_enum_variant called on non-EnumVariant");
         };
+
+        // Simple variants of generic (template) enums are instances of the
+        // monomorph their context selects.
+        if self.is_template_enum(enum_name) {
+            let (_, ty) = self.instance_params_and_type(enum_name, &[], &HashMap::new())?;
+            expr.ty = ty;
+            return Ok(ty);
+        }
+
         let _variant_info = self
             .symbols
             .lookup_variant(enum_name, variant_name)
@@ -1380,6 +2030,11 @@ impl TypeInferencer {
         else {
             unreachable!("infer_enum_init called on non-EnumInit");
         };
+
+        // Generic (template) enum: same instantiation as constructor calls.
+        if self.is_template_enum(enum_name) {
+            return self.infer_generic_enum_ctor(&mut expr.ty, enum_name, variant_name, args);
+        }
 
         let (variant_info, enum_def) = {
             let info = self
@@ -1580,8 +2235,106 @@ impl TypeInferencer {
         Ok(result)
     }
 
-    /// Unify two type IDs
+    /// Unify two type IDs.
+    ///
+    /// Generic applications (instance type variables) unify specially:
+    ///
+    /// - two applications of the same template unify their parameters pairwise
+    ///   (mirroring the reference's `unifyTemplateVars`, e.g. a bare
+    ///   `WrapperType` annotation unified with an `WrapperType[Int]` initializer);
+    /// - an application unified with the `Named(monomorph)` of its own template
+    ///   unifies its parameters with the monomorph's concrete arguments;
+    /// - an application unified with anything else is a type mismatch
+    ///   (except an unconstrained unknown, which binds as usual).
+    ///
+    /// # Errors
+    /// Returns `TypeError` on a mismatch between two distinct template applications or between an
+    /// application and an incompatible concrete type.
     fn unify(&mut self, a: TypeId, b: TypeId) -> CompileResult<()> {
-        self.store.unify(a, b)
+        let rep_a = self.store.find_rep(a);
+        let rep_b = self.store.find_rep(b);
+
+        if rep_a == rep_b {
+            return Ok(());
+        }
+
+        let inst_a = self.monomorphs.instance_types.get(&rep_a).cloned();
+        let inst_b = self.monomorphs.instance_types.get(&rep_b).cloned();
+
+        match (inst_a, inst_b) {
+            // Two applications of the same template: unify parameters pairwise.
+            (Some(ia), Some(ib)) => {
+                if ia.base != ib.base {
+                    return Err(type_err!(
+                        "Type mismatch: instance of '{}' vs instance of '{}'",
+                        ia.base,
+                        ib.base,
+                    ));
+                }
+                if ia.params.len() != ib.params.len() {
+                    return Err(type_err!(
+                        "Type mismatch: incompatible applications of '{}'",
+                        ia.base,
+                    ));
+                }
+                for (pa, pb) in ia.params.iter().zip(ib.params.iter()) {
+                    self.unify(*pa, *pb)?;
+                }
+                self.store.unify(a, b)
+            }
+            // Application unified with its own concrete monomorph.
+            (Some(ia), None) => self.unify_instance_with_known(ia, rep_b, a, b),
+            (None, Some(ib)) => self.unify_instance_with_known(ib, rep_a, b, a),
+            (None, None) => self.store.unify(a, b),
+        }
+    }
+
+    /// Unify an instance variable with a known type.
+    ///
+    /// Binds the instance variable to the monomorph when `known` is exactly that application's
+    /// monomorph, errors on a mismatch with any other definite type, and falls back to a plain bind
+    /// when `known` is still an unbound unknown.
+    ///
+    /// # Errors
+    /// Returns `TypeError` when `known` is a definite, non-matching type.
+    fn unify_instance_with_known(
+        &mut self,
+        inst: super::monomorph::PendingInstance,
+        known_rep: TypeId,
+        inst_id: TypeId,
+        known_id: TypeId,
+    ) -> CompileResult<()> {
+        match self.store.resolve(known_rep) {
+            // The application's monomorph: tie the instance's parameters to its
+            // concrete arguments, then bind the instance variable to it.
+            Ok(Type::Named(name)) => {
+                if let Some((base, args)) = self.monomorphs.mono_instances.get(&name).cloned()
+                    && base == inst.base
+                    && args.len() == inst.params.len()
+                {
+                    let arg_ids: Vec<TypeId> = args
+                        .iter()
+                        .map(|arg| self.store.new_known(arg.clone()))
+                        .collect();
+                    for (param, arg_id) in inst.params.iter().zip(arg_ids.iter()) {
+                        self.unify(*param, *arg_id)?;
+                    }
+                    return self.store.unify(inst_id, known_id);
+                }
+                Err(type_err!(
+                    "Type mismatch: instance of '{}' vs {}",
+                    inst.base,
+                    name,
+                ))
+            }
+            // Any other definite type side: a genuine mismatch.
+            Ok(other) => Err(type_err!(
+                "Type mismatch: instance of '{}' vs {}",
+                inst.base,
+                other,
+            )),
+            // The other side is still an unbound unknown: bind as usual.
+            Err(_) => self.store.unify(inst_id, known_id),
+        }
     }
 }

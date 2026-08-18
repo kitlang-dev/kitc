@@ -1,6 +1,6 @@
 //! Generates the `example_tests.rs` file that drives the end-to-end examples suite.
 //!
-//! The corpus of Kit fixtures lives in `examples/` at the workspace root. Rather than hand-writing a
+//! The corpus of Kit fixtures is kept in `examples/` at the workspace root. Rather than hand-writing a
 //! `#[test]` function for every fixture (which is how this suite originally worked, and which let
 //! fixtures silently drift out of coverage), this build script scans the `examples/` directory and
 //! emits one `#[test]` function per fixture. Tests are discovered from the *files on disk*, so:

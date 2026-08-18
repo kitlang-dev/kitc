@@ -1,0 +1,14 @@
+include "stdio.h";
+
+struct Pair[A, B] {
+    var a: A;
+    var b: B;
+}
+
+function main() {
+    // partial parameters: B is filled by usage
+    var f: Pair[Int];
+    f.a = 40;
+    f.b = 77.0;
+    printf("%i %.1f\n", f.a, f.b);
+}

@@ -100,6 +100,31 @@ impl TypeStore {
         }
     }
 
+    /// Follow type-variable bindings from `id`; if the representative is still an
+    /// unbound unknown, bind it to the given known type and return `true`.
+    /// Returns `false` when the representative is already bound or is a known node
+    /// (used by monomorph generation to bind instance type variables without
+    /// erroring on duplicates).
+    pub fn bind_if_unbound(&mut self, id: TypeId, known: Type) -> bool {
+        let rep = self.find_rep(id);
+        let TypeNode::Unknown(var_id) = self.get_node(rep).clone() else {
+            return false;
+        };
+        if self
+            .type_vars
+            .get(var_id.0 as usize)
+            .is_some_and(|var| var.binding.is_some())
+        {
+            return false;
+        }
+        let ty_id = self.new_known(known);
+        let Some(var) = self.type_vars.get_mut(var_id.0 as usize) else {
+            return false;
+        };
+        var.binding = Some(ty_id);
+        true
+    }
+
     /// Resolve a `TypeId` to its concrete Type.
     ///
     /// Follows type variable bindings. Returns error if any type variables remain unbound.
@@ -298,6 +323,47 @@ impl TypeStore {
                 }
             }
 
+            // Generic applications: same base type, pairwise-unify the arguments.
+            // Application types whose parameters are still unknown are handled by
+            // the inference-side `instance_types` side table; this arm covers
+            // fully-concrete applications that appear in both operands by value.
+            (Type::Instance { base: b1, args: a1 }, Type::Instance { base: b2, args: a2 }) => {
+                if b1 != b2 {
+                    return Err(CompilationError::TypeError(format!(
+                        "Cannot unify different generic types: {b1} vs {b2}"
+                    )));
+                }
+                if a1.len() != a2.len() {
+                    return Err(CompilationError::TypeError(format!(
+                        "Cannot unify {b1}[{}] with {b2}[{}]: different number of type arguments",
+                        a1.iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        a2.iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    )));
+                }
+                for (t1, t2) in a1.iter().zip(a2.iter()) {
+                    self.unify_type_ids(t1.clone(), t2.clone())?;
+                }
+                Ok(())
+            }
+
+            // Type parameters compare by name (they only reach unification inside
+            // template bodies, which are never typed; this is defensive).
+            (Type::TypeParam(n1), Type::TypeParam(n2)) => {
+                if n1 == n2 {
+                    Ok(())
+                } else {
+                    Err(CompilationError::TypeError(format!(
+                        "Cannot unify different type parameters: {n1} vs {n2}"
+                    )))
+                }
+            }
+
             // Function types: unify element-wise
             (
                 Type::Function {
@@ -363,10 +429,19 @@ impl TypeStore {
 }
 
 /// A type in the Kit language: primitives, composites (struct/enum/tuple), references (pointers/named aliases), and function types.
-#[derive(Clone, Debug, PartialEq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Type {
     /// User-defined named type (fallback for types not covered by other variants).
     Named(String),
+    /// Type parameter reference bound by an enclosing generic definition (e.g. `T` in `value: T`).
+    TypeParam(String),
+    /// Application of a generic type with arguments (e.g. `List[Int]`).
+    Instance {
+        /// The generic base type name (e.g. "List").
+        base: String,
+        /// The type arguments (e.g. `[Int]`).
+        args: Vec<Type>,
+    },
     /// Pointer type (e.g., `Ptr(Int)` represents `int*`).
     Ptr(Box<Type>),
     /// 8-bit signed integer (`int8_t` in C).
@@ -428,6 +503,11 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Type::Named(name) => write!(f, "{name}"),
+            Type::TypeParam(name) => write!(f, "{name}"),
+            Type::Instance { base, args } => {
+                let items: Vec<String> = args.iter().map(|t| t.to_string()).collect();
+                write!(f, "{base}[{}]", items.join(", "))
+            }
             Type::Ptr(inner) => write!(f, "Ptr({inner})"),
             Type::Int8 => write!(f, "Int8"),
             Type::Int16 => write!(f, "Int16"),
@@ -564,6 +644,14 @@ impl ToCRepr for Type {
                 }
             }
             Type::Named(name) => simple_c_type(name, &[]),
+            // Template-only types: never emitted to C because template
+            // declarations are excluded from codegen. The names here are only
+            // used as hash-key inputs for generated monomorph identifiers.
+            Type::TypeParam(name) => simple_c_type(name, &[]),
+            Type::Instance { base, args } => {
+                let arg_names: Vec<String> = args.iter().map(|t| t.to_c_repr().name).collect();
+                simple_c_type(&format!("{}_{}", base, arg_names.join("_")), &[])
+            }
             Type::Struct { name, fields: _ } => CRepr {
                 name: format!("struct {}", name),
                 declaration: None,

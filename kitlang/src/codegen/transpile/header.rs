@@ -119,7 +119,45 @@ impl CodegenCtx<'_> {
                     impls: vec![],
                     rulesets: vec![],
                     typedefs: filter_by_name(&merged.typedefs, &names.typedefs, |t| &t.name),
+                    defaults: vec![],
                 };
+                // Monomorphized generics of this module's templates are emitted
+                // alongside the module's own declarations (templates themselves
+                // are never emitted).
+                let mut filtered = filtered;
+                filtered.structs.extend(
+                    merged
+                        .structs
+                        .iter()
+                        .filter(|s| {
+                            self.inferencer
+                                .monomorph_module(&s.name)
+                                .is_some_and(|mp| mp == path)
+                        })
+                        .cloned(),
+                );
+                filtered.enums.extend(
+                    merged
+                        .enums
+                        .iter()
+                        .filter(|e| {
+                            self.inferencer
+                                .monomorph_module(&e.name)
+                                .is_some_and(|mp| mp == path)
+                        })
+                        .cloned(),
+                );
+                filtered.functions.extend(
+                    merged
+                        .functions
+                        .iter()
+                        .filter(|f| {
+                            self.inferencer
+                                .monomorph_module(&f.name)
+                                .is_some_and(|mp| mp == path)
+                        })
+                        .cloned(),
+                );
 
                 let header = self.generate_module_header_from_program(&filtered, module);
                 let h_name = format!(
@@ -171,11 +209,19 @@ impl CodegenCtx<'_> {
         }
 
         for struct_def in &prog.structs {
+            // Generic (template) structs are never emitted directly; their
+            // monomorphs are.
+            if !struct_def.type_params.is_empty() {
+                continue;
+            }
             out.push_str(&self.generate_struct_declaration(struct_def, &prog.structs));
             out.push('\n');
         }
 
         for enum_def in &prog.enums {
+            if !enum_def.type_params.is_empty() {
+                continue;
+            }
             out.push_str(&self.generate_enum_declaration(enum_def));
             out.push('\n');
         }
@@ -226,6 +272,9 @@ impl CodegenCtx<'_> {
         }
 
         for func in &prog.functions {
+            if !func.type_params.is_empty() {
+                continue;
+            }
             let ret = self.resolve_return_type_c_name(func);
             let mod_path = func.mangling_module(&module.path);
             let fname = if func.name == "main" {
@@ -276,6 +325,9 @@ impl CodegenCtx<'_> {
             out.push('\n');
         }
         for func in &prog.functions {
+            if !func.type_params.is_empty() {
+                continue;
+            }
             out.push_str(&self.transpile_function(func));
             out.push_str("\n\n");
         }

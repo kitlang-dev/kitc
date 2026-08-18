@@ -6,6 +6,8 @@ use super::types::Type;
 #[derive(Clone, Debug, PartialEq)]
 pub struct StructDefinition {
     pub name: String,
+    /// Generic type parameters (empty for concrete structs).
+    pub type_params: Vec<TypeParam>,
     pub fields: Vec<Field>,
     pub is_public: bool,
     pub metadata: Vec<Metadata>,
@@ -50,6 +52,8 @@ impl Attributed for EnumVariant {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EnumDefinition {
     pub name: String,
+    /// Generic type parameters (empty for concrete enums).
+    pub type_params: Vec<TypeParam>,
     pub variants: Vec<EnumVariant>,
     pub is_public: bool,
     pub metadata: Vec<Metadata>,
@@ -71,10 +75,14 @@ pub struct TraitDefinition {
     pub is_public: bool,
 }
 
-/// A type parameter with optional default.
+/// A type parameter with optional trait constraints and default type.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeParam {
     pub name: String,
+    /// Trait constraints on this parameter (e.g. `Hashable` for `T: Hashable`).
+    /// Stored as trait references (`Type::Named`/`Type::Instance`); enforced once
+    /// trait support is added.
+    pub constraints: Vec<Type>,
     pub default: Option<Type>,
 }
 

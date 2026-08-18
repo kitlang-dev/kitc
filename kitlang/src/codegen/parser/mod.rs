@@ -8,13 +8,13 @@ use crate::error::{self, CompilationError, Span};
 use crate::{Rule, parse_error};
 
 use super::ast::{
-    Block, Expr, ExprKind, Function, GlobalDecl, Include, Literal, MatchArm, MatchStmt, MetaArg,
-    Metadata, Param, Stmt, StmtKind,
+    Block, DefaultSpecialization, Expr, ExprKind, Function, GlobalDecl, Include, Literal, MatchArm,
+    MatchStmt, MetaArg, Metadata, Param, Stmt, StmtKind,
 };
 use super::module::{ImportType, ModuleImport, ModulePath};
 use super::type_ast::{
     EnumDefinition, EnumVariant, Field, ImplDefinition, RuleDecl, RuleSet, StructDefinition,
-    TraitDefinition, TypeDef, UsingClause,
+    TraitDefinition, TypeDef, TypeParam, UsingClause,
 };
 use super::types::{Type, TypeId};
 use crate::error::CompileResult;
@@ -228,7 +228,11 @@ impl Parser {
         PestExpr::new(pair, self.file.clone(), self.source.clone()).parse()
     }
 
-    pub fn parse_function(&self, pair: Pair<Rule>) -> CompileResult<Function> {
+    pub fn parse_function(
+        &self,
+        pair: Pair<Rule>,
+        outer_type_params: &[&str],
+    ) -> CompileResult<Function> {
         let parent_span = pair.as_span();
         let mut inner = pair.into_inner();
 
@@ -246,21 +250,33 @@ impl Parser {
                 .with_context(self.context_from_span(&parent_span))
         })?);
 
+        let mut type_params: Vec<TypeParam> = Vec::new();
         let mut params: Vec<Param> = Vec::new();
         let mut return_type: Option<Type> = None;
         let mut body = Block { stmts: Vec::new() };
 
         for node in inner {
             match node.as_rule() {
-                Rule::params => params = self.parse_params(node)?,
-                Rule::type_annotation => return_type = Some(self.parse_type(node)?),
-                Rule::block => body = self.parse_block(node)?,
+                Rule::type_params => type_params = self.parse_type_params(node)?,
+                Rule::params => {
+                    let scope = Self::type_param_scope(outer_type_params, &type_params);
+                    params = self.parse_params(node, &scope)?;
+                }
+                Rule::type_annotation => {
+                    let scope = Self::type_param_scope(outer_type_params, &type_params);
+                    return_type = Some(self.parse_type(node, &scope)?);
+                }
+                Rule::block => {
+                    let scope = Self::type_param_scope(outer_type_params, &type_params);
+                    body = self.parse_block(node, &scope)?;
+                }
                 _ => {}
             }
         }
 
         Ok(Function {
             name,
+            type_params,
             params,
             return_type,
             inferred_return: None,
@@ -292,19 +308,21 @@ impl Parser {
                 })?,
         );
 
-        // Skip type_params if present
+        // Collect type_params if present
+        let mut type_params: Vec<TypeParam> = Vec::new();
         while let Some(peek) = inner.peek() {
             if peek.as_rule() == Rule::type_params {
-                let _ = inner.next();
+                type_params = self.parse_type_params(inner.next().expect("peeked type_params"))?;
             } else {
                 break;
             }
         }
 
+        let names = Self::type_param_names(&type_params);
         // Collect var_decl rules from the remaining children
         let fields: Vec<Field> = inner
             .filter(|p| p.as_rule() == Rule::var_decl)
-            .map(|p| self.parse_struct_field(&p))
+            .map(|p| self.parse_struct_field(&p, &names))
             .collect::<Result<_, _>>()?;
 
         if fields.is_empty() {
@@ -313,6 +331,7 @@ impl Parser {
 
         Ok(StructDefinition {
             name,
+            type_params,
             fields,
             is_public,
             metadata,
@@ -339,17 +358,20 @@ impl Parser {
                 })?,
         );
 
+        // Collect type_params if present
+        let mut type_params: Vec<TypeParam> = Vec::new();
         while let Some(peek) = inner.peek() {
             if peek.as_rule() == Rule::type_params {
-                let _ = inner.next();
+                type_params = self.parse_type_params(inner.next().expect("peeked type_params"))?;
             } else {
                 break;
             }
         }
 
+        let names = Self::type_param_names(&type_params);
         let variants: Vec<EnumVariant> = inner
             .filter(|p| p.as_rule() == Rule::enum_variant)
-            .map(|p| self.parse_enum_variant(p, name.clone()))
+            .map(|p| self.parse_enum_variant(p, name.clone(), &names))
             .collect::<Result<_, _>>()?;
 
         if variants.is_empty() {
@@ -358,6 +380,7 @@ impl Parser {
 
         Ok(EnumDefinition {
             name,
+            type_params,
             variants,
             is_public,
             metadata,
@@ -368,6 +391,7 @@ impl Parser {
         &self,
         pair: Pair<Rule>,
         parent_name: String,
+        type_params: &[&str],
     ) -> CompileResult<EnumVariant> {
         let span = pair.as_span();
         let mut inner = pair.into_inner();
@@ -383,7 +407,7 @@ impl Parser {
                     identifier_found = Some(Self::pair_text(child));
                 }
                 Rule::param => {
-                    let field = self.parse_param_field(child)?;
+                    let field = self.parse_param_field(child, type_params)?;
                     args.push(field);
                 }
                 Rule::expr => {
@@ -419,10 +443,12 @@ impl Parser {
     pub fn parse_trait_def(&self, pair: Pair<Rule>) -> CompileResult<TraitDefinition> {
         let parent_span = pair.as_span();
         let mut inner = pair.into_inner();
-        // First child is metadata_and_modifiers - skip it for now
-        if inner.peek().map(|p| p.as_rule()) == Some(Rule::metadata_and_modifiers) {
-            let _ = inner.next();
-        }
+        let (_metadata, is_public) = match inner.peek() {
+            Some(p) if p.as_rule() == Rule::metadata_and_modifiers => {
+                Self::parse_metadata_and_modifiers(inner.next())
+            }
+            _ => (vec![], true),
+        };
         let name = Self::pair_text(
             inner
                 .next()
@@ -432,21 +458,34 @@ impl Parser {
                         .with_context(self.context_from_span(&parent_span))
                 })?,
         );
-        // Skip type_params and trait params for now
-        while inner.peek().is_some()
-            && matches!(
-                inner.peek().map(|p| p.as_rule()),
-                Some(Rule::type_params | Rule::identifier)
-            )
-        {
-            let _ = inner.next();
+        // `params` holds the bracket `[T, U]` type params; `assoc_params` the
+        // paren `(AssocT)` associated-type params. Both are kept in `params` so
+        // no declared type parameter is lost (kitc's `TraitDefinition` has no
+        // dedicated associated-types field).
+        let mut params: Vec<TypeParam> = Vec::new();
+        let mut assoc_params: Vec<TypeParam> = Vec::new();
+        let mut methods: Vec<Function> = Vec::new();
+        let mut fields: Vec<GlobalDecl> = Vec::new();
+        for node in inner {
+            match node.as_rule() {
+                Rule::type_params => params = self.parse_type_params(node)?,
+                Rule::type_param => assoc_params.push(self.parse_type_param(node)?),
+                Rule::function_decl => {
+                    let trait_params = Self::type_param_names(&params);
+                    let scope = Self::type_param_scope(&trait_params, &assoc_params);
+                    methods.push(self.parse_function(node, &scope)?);
+                }
+                Rule::var_decl => fields.push(self.parse_global_var_decl(&node)?),
+                _ => {}
+            }
         }
+        params.extend(assoc_params);
         Ok(TraitDefinition {
             name,
-            params: Vec::new(),
-            methods: Vec::new(),
-            fields: Vec::new(),
-            is_public: true,
+            params,
+            methods,
+            fields,
+            is_public,
         })
     }
 
@@ -458,28 +497,73 @@ impl Parser {
         if inner.peek().map(|p| p.as_rule()) == Some(Rule::metadata_and_modifiers) {
             let _ = inner.next();
         }
-        let trait_type = self.parse_type(inner.next().ok_or_else(|| {
-            parse_error!("trait impl missing trait type")
-                .with_context(self.context_from_span(&parent_span))
-        })?)?;
-        // Skip type_params
-        while let Some(peek) = inner.peek()
-            && peek.as_rule() == Rule::type_params
-        {
-            let _ = inner.next();
+        let trait_type = self.parse_type(
+            inner.next().ok_or_else(|| {
+                parse_error!("trait impl missing trait type")
+                    .with_context(self.context_from_span(&parent_span))
+            })?,
+            &[],
+        )?;
+        let mut params: Vec<TypeParam> = Vec::new();
+        let mut for_type = Type::Void;
+        let mut methods: Vec<Function> = Vec::new();
+        for node in inner {
+            match node.as_rule() {
+                Rule::type_params => params = self.parse_type_params(node)?,
+                Rule::type_annotation => {
+                    let names = Self::type_param_names(&params);
+                    for_type = self.parse_type(node, &names)?;
+                }
+                Rule::function_decl => {
+                    let names = Self::type_param_names(&params);
+                    methods.push(self.parse_function(node, &names)?);
+                }
+                _ => {}
+            }
         }
-        // Skip "for" keyword - not a named rule, consumed implicitly
-        let for_type = self.parse_type(inner.next().ok_or_else(|| {
-            parse_error!("trait impl missing 'for' type")
-                .with_context(self.context_from_span(&parent_span))
-        })?)?;
-        // TODO: For now, return a simple placeholder
         Ok(ImplDefinition {
             name: String::new(),
             trait_type,
             for_type,
-            params: Vec::new(),
-            methods: Vec::new(),
+            params,
+            methods,
+        })
+    }
+
+    /// Parse a `default Trait as Type;` specialization declaration into a
+    /// `DefaultSpecialization`. The trait is reduced to its base name; the default type is kept
+    /// as a full `Type` so it can be bound to the constrained type variable.
+    pub fn parse_default_decl(&self, pair: Pair<Rule>) -> CompileResult<DefaultSpecialization> {
+        let parent_span = pair.as_span();
+        let mut inner = pair.into_inner();
+        let trait_type = self.parse_type(
+            inner.next().ok_or_else(|| {
+                parse_error!("default specialization missing trait")
+                    .with_context(self.context_from_span(&parent_span))
+            })?,
+            &[],
+        )?;
+        let default_type = self.parse_type(
+            inner.next().ok_or_else(|| {
+                parse_error!("default specialization missing default type")
+                    .with_context(self.context_from_span(&parent_span))
+            })?,
+            &[],
+        )?;
+        let trait_name = match &trait_type {
+            Type::Named(name) => name.clone(),
+            Type::Instance { base, .. } => base.clone(),
+            other => {
+                return Err(parse_error!(
+                    "default specialization trait must be a trait name, got {:?}",
+                    other
+                )
+                .with_context(self.context_from_span(&parent_span)));
+            }
+        };
+        Ok(DefaultSpecialization {
+            trait_name,
+            default_type,
         })
     }
 
@@ -525,7 +609,7 @@ impl Parser {
         let type_pair = inner.next().ok_or_else(|| {
             parse_error!("typedef missing type").with_context(self.context_from_span(&parent_span))
         })?;
-        let type_def = self.parse_type(type_pair)?;
+        let type_def = self.parse_type(type_pair, &[])?;
         Ok(TypeDef { name, type_def })
     }
 
@@ -544,20 +628,71 @@ impl Parser {
     fn parse_using_clause(&self, pair: Pair<Rule>) -> CompileResult<UsingClause> {
         let parent_span = pair.as_span();
         // using_clause = { ("rules" ~ type_annotation) | ("implicit" ~ expr) }
-        // The first alternative yields a `type_annotation` child, the second yields an `expr` child.
+        // First alternative yields a `type_annotation` child, the second an `expr` child.
         let mut inner = pair.into_inner();
         let child = inner.next().ok_or_else(|| {
             parse_error!("using clause is empty").with_context(self.context_from_span(&parent_span))
         })?;
         if child.as_rule() == Rule::type_annotation {
-            Ok(UsingClause::RuleSet(self.parse_type(child)?))
+            Ok(UsingClause::RuleSet(self.parse_type(child, &[])?))
         } else {
             Ok(UsingClause::Implicit(self.parse_expr(child)?))
         }
     }
 
-    fn parse_struct_field(&self, pair: &Pair<Rule>) -> CompileResult<Field> {
-        // var_decl = { (var_kw | const_kw) ~ identifier ~ (":" ~ type_annotation)? ~ ("=" ~ expr)? ~ ";" }
+    /// Parse a single `type_param` into a `TypeParam`.
+    fn parse_type_param(&self, pair: Pair<Rule>) -> CompileResult<TypeParam> {
+        let parent_span = pair.as_span();
+        let mut inner = pair.into_inner();
+        let name = Self::pair_text(inner.next().ok_or_else(|| {
+            parse_error!("type parameter missing name")
+                .with_context(self.context_from_span(&parent_span))
+        })?);
+        let mut constraints = Vec::new();
+        let mut default = None;
+        for child in inner {
+            match child.as_rule() {
+                Rule::type_constraints => {
+                    for constraint in child.into_inner() {
+                        if constraint.as_rule() == Rule::type_annotation {
+                            constraints.push(self.parse_type(constraint, &[])?);
+                        }
+                    }
+                }
+                Rule::type_annotation => default = Some(self.parse_type(child, &[])?),
+                _ => {}
+            }
+        }
+        Ok(TypeParam {
+            name,
+            constraints,
+            default,
+        })
+    }
+
+    /// Parse a `type_params` rule into a list of `TypeParam`s.
+    fn parse_type_params(&self, pair: Pair<Rule>) -> CompileResult<Vec<TypeParam>> {
+        pair.into_inner()
+            .filter(|p| p.as_rule() == Rule::type_param)
+            .map(|p| self.parse_type_param(p))
+            .collect()
+    }
+
+    /// Borrow the names of a list of type parameters.
+    fn type_param_names(params: &[TypeParam]) -> Vec<&str> {
+        params.iter().map(|tp| tp.name.as_str()).collect()
+    }
+
+    /// Combine enclosing (outer) type-parameter names with a definition's own.
+    fn type_param_scope<'a>(outer: &'a [&'a str], params: &'a [TypeParam]) -> Vec<&'a str> {
+        let mut scope = outer.to_vec();
+        scope.extend(Self::type_param_names(params));
+        scope
+    }
+
+    fn parse_struct_field(&self, pair: &Pair<Rule>, type_params: &[&str]) -> CompileResult<Field> {
+        // var_decl = { (var_kw | const_kw) ~ identifier
+        //   ~ (":" ~ type_annotation)? ~ ("=" ~ expr)? ~ ";" }
         let name = Self::extract_first_identifier(pair.clone()).ok_or_else(|| {
             parse_error!("struct field missing name").with_context(self.context_for(pair))
         })?;
@@ -565,7 +700,7 @@ impl Parser {
         let is_const = Self::is_const_var_decl(pair);
 
         let annotation = Self::extract_first_rule(pair.clone(), Rule::type_annotation)
-            .map(|p| self.parse_type(p))
+            .map(|p| self.parse_type(p, type_params))
             .transpose()?;
 
         let default = Self::extract_first_rule(pair.clone(), Rule::expr)
@@ -593,7 +728,7 @@ impl Parser {
         pair.into_inner().find(|p| p.as_rule() == rule)
     }
 
-    fn parse_params(&self, pair: Pair<Rule>) -> CompileResult<Vec<Param>> {
+    fn parse_params(&self, pair: Pair<Rule>, type_params: &[&str]) -> CompileResult<Vec<Param>> {
         let parent_span = pair.as_span();
         // param_list = { param ~ ("," ~ param )* }
         pair.into_inner()
@@ -608,7 +743,7 @@ impl Parser {
                     parse_error!("param missing type")
                         .with_context(self.context_from_span(&parent_span))
                 })?;
-                let ty_ann = self.parse_type(type_node)?;
+                let ty_ann = self.parse_type(type_node, type_params)?;
                 Ok(Param {
                     name,
                     annotation: Some(ty_ann),
@@ -618,7 +753,7 @@ impl Parser {
             .collect()
     }
 
-    fn parse_param_field(&self, pair: Pair<Rule>) -> CompileResult<Field> {
+    fn parse_param_field(&self, pair: Pair<Rule>, type_params: &[&str]) -> CompileResult<Field> {
         let parent_span = pair.as_span();
         // param = { identifier ~ ":" ~ type_annotation ~ ( "=" ~ expr )? }
         let mut inner = pair.into_inner();
@@ -630,7 +765,7 @@ impl Parser {
             parse_error!("param field missing type annotation")
                 .with_context(self.context_from_span(&parent_span))
         })?;
-        let ty_ann = self.parse_type(type_node)?;
+        let ty_ann = self.parse_type(type_node, type_params)?;
 
         // Check for optional default expression
         let default = inner
@@ -647,14 +782,16 @@ impl Parser {
         })
     }
 
-    fn parse_block(&self, pair: Pair<Rule>) -> CompileResult<Block> {
+    fn parse_block(&self, pair: Pair<Rule>, type_params: &[&str]) -> CompileResult<Block> {
         let parent_span = pair.as_span();
         // block = { "{" ~ (statement)* ~ "}" }
         let stmts = pair
             .into_inner()
             // grammar gives us a wrapper Rule::statement
             .filter(|p: &Pair<Rule>| p.as_rule() == Rule::statement)
-            .map(|stmt_pair: Pair<Rule>| self.parse_statement_pair(&stmt_pair, &parent_span))
+            .map(|stmt_pair: Pair<Rule>| {
+                self.parse_statement_pair(&stmt_pair, &parent_span, type_params)
+            })
             .collect::<Result<_, _>>()?;
         Ok(Block { stmts })
     }
@@ -664,13 +801,14 @@ impl Parser {
         &self,
         stmt_pair: &Pair<Rule>,
         parent_span: &pest::Span<'_>,
+        type_params: &[&str],
     ) -> CompileResult<Stmt> {
         let inner = stmt_pair.clone().into_inner().next().ok_or_else(|| {
             parse_error!("statement wrapper is empty")
                 .with_context(self.context_from_span(parent_span))
         })?;
         match inner.as_rule() {
-            Rule::defer_stmt => self.parse_defer(inner),
+            Rule::defer_stmt => self.parse_defer(inner, type_params),
             Rule::block_stmt => {
                 // The grammar wraps the inner `block` rule inside a `block_stmt` wrapper,
                 // which follows the same pattern as `defer_stmt` wrapping a `statement`.
@@ -684,19 +822,19 @@ impl Parser {
 
                 debug_assert_eq!(block_pair.as_rule(), Rule::block);
 
-                let block = self.parse_block(block_pair)?;
+                let block = self.parse_block(block_pair, type_params)?;
 
                 Ok(Stmt {
                     kind: StmtKind::Block(block),
                     span: Span::from_pest(&inner.as_span()),
                 })
             }
-            Rule::var_decl => self.parse_var_decl(&inner),
+            Rule::var_decl => self.parse_var_decl(&inner, type_params),
             Rule::expr_stmt => self.parse_expr_stmt(inner),
             Rule::return_stmt => self.parse_return(inner),
-            Rule::if_stmt => self.parse_if_stmt(inner),
-            Rule::while_stmt => self.parse_while_stmt(inner),
-            Rule::for_stmt => self.parse_for_stmt(inner),
+            Rule::if_stmt => self.parse_if_stmt(inner, type_params),
+            Rule::while_stmt => self.parse_while_stmt(inner, type_params),
+            Rule::for_stmt => self.parse_for_stmt(inner, type_params),
             Rule::break_stmt => Ok(Stmt {
                 kind: StmtKind::Break,
                 span: Span::from_pest(&inner.as_span()),
@@ -712,7 +850,7 @@ impl Parser {
         }
     }
 
-    fn parse_defer(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+    fn parse_defer(&self, pair: Pair<Rule>, type_params: &[&str]) -> CompileResult<Stmt> {
         let parent_span = pair.as_span();
         // defer_stmt = { "defer" ~ statement }
         let mut inner = pair.into_inner();
@@ -720,23 +858,24 @@ impl Parser {
             parse_error!("defer missing body").with_context(self.context_from_span(&parent_span))
         })?;
         debug_assert_eq!(body_pair.as_rule(), Rule::statement);
-        let body = Box::new(self.parse_statement_pair(&body_pair, &parent_span)?);
+        let body = Box::new(self.parse_statement_pair(&body_pair, &parent_span, type_params)?);
         Ok(Stmt {
             kind: StmtKind::Defer { body },
             span: Span::from_pest(&parent_span),
         })
     }
 
-    fn parse_var_decl(&self, pair: &Pair<Rule>) -> CompileResult<Stmt> {
-        // var_decl = { (var_kw | const_kw) ~ identifier ~ (":" ~ type_annotation)? ~ ("=" ~ expr)? ~ ";" }
-        // Note: const_kw is silently consumed (not used for var_decl statements in current implementation)
+    fn parse_var_decl(&self, pair: &Pair<Rule>, type_params: &[&str]) -> CompileResult<Stmt> {
+        // var_decl = { (var_kw | const_kw) ~ identifier
+        //   ~ (":" ~ type_annotation)? ~ ("=" ~ expr)? ~ ";" }
+        // const_kw is accepted but not tracked; var_decl statements have no const semantics today.
 
         let name = Self::extract_first_identifier(pair.clone()).ok_or_else(|| {
             parse_error!("var_decl missing identifier").with_context(self.context_for(pair))
         })?;
 
         let annotation = Self::extract_first_rule(pair.clone(), Rule::type_annotation)
-            .map(|p| self.parse_type(p))
+            .map(|p| self.parse_type(p, type_params))
             .transpose()?;
 
         let init = Self::extract_first_rule(pair.clone(), Rule::expr)
@@ -775,7 +914,7 @@ impl Parser {
         let is_const = Self::is_const_var_decl(pair);
 
         let annotation = Self::extract_first_rule(pair.clone(), Rule::type_annotation)
-            .map(|p| self.parse_type(p))
+            .map(|p| self.parse_type(p, &[]))
             .transpose()?;
 
         let init = Self::extract_first_rule(pair.clone(), Rule::expr)
@@ -793,7 +932,7 @@ impl Parser {
         })
     }
 
-    fn parse_type(&self, pair: Pair<Rule>) -> CompileResult<Type> {
+    fn parse_type(&self, pair: Pair<Rule>, type_params: &[&str]) -> CompileResult<Type> {
         let parent_span = pair.as_span();
         let inner_rule = pair.into_inner().next().ok_or_else(|| {
             parse_error!("type annotation is empty")
@@ -804,7 +943,7 @@ impl Parser {
                 let inner_base_type = inner_rule.into_inner();
                 let mut elem_types: Vec<Type> = Vec::new();
                 for elem in inner_base_type {
-                    elem_types.push(self.parse_type(elem)?);
+                    elem_types.push(self.parse_type(elem, type_params)?);
                 }
                 Ok(Type::Tuple(elem_types))
             }
@@ -818,14 +957,31 @@ impl Parser {
                     })?
                     .as_str()
                     .trim();
-                Ok(Type::from_kit(base_name))
+                // Remaining children (if any) are the `[...]` type arguments,
+                // making this an application of a generic type (`List[Int]`).
+                let mut args: Vec<Type> = Vec::new();
+                for arg in inner_base_type {
+                    args.push(self.parse_type(arg, type_params)?);
+                }
+                if !args.is_empty() {
+                    Ok(Type::Instance {
+                        base: base_name.to_string(),
+                        args,
+                    })
+                } else if type_params.contains(&base_name) {
+                    // A name matching an in-scope generic parameter is a bound
+                    // type-parameter reference (`T` in `value: T`), not a named type.
+                    Ok(Type::TypeParam(base_name.to_string()))
+                } else {
+                    Ok(Type::from_kit(base_name))
+                }
             }
             Rule::pointer_type => {
                 let inner_ptr_type = inner_rule.into_inner().next().ok_or_else(|| {
                     parse_error!("pointer type is empty")
                         .with_context(self.context_from_span(&parent_span))
                 })?;
-                let inner_ty = self.parse_type(inner_ptr_type)?;
+                let inner_ty = self.parse_type(inner_ptr_type, type_params)?;
                 Ok(Type::Ptr(Box::new(inner_ty)))
             }
             Rule::function_type => {
@@ -837,9 +993,11 @@ impl Parser {
                     parse_error!("function_type missing return type")
                         .with_context(self.context_from_span(&parent_span))
                 })?;
-                let ret_ty = self.parse_type(ret_pair)?;
-                let param_tys: Result<Vec<Type>, CompilationError> =
-                    type_pairs.into_iter().map(|p| self.parse_type(p)).collect();
+                let ret_ty = self.parse_type(ret_pair, type_params)?;
+                let param_tys: Result<Vec<Type>, CompilationError> = type_pairs
+                    .into_iter()
+                    .map(|p| self.parse_type(p, type_params))
+                    .collect();
                 Ok(Type::Function {
                     param_tys: param_tys?,
                     ret_ty: Box::new(ret_ty),
@@ -878,7 +1036,7 @@ impl Parser {
         })
     }
 
-    fn parse_if_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+    fn parse_if_stmt(&self, pair: Pair<Rule>, type_params: &[&str]) -> CompileResult<Stmt> {
         let parent_span = pair.as_span();
         // if_stmt = { "if" ~ expr ~ block ~ else_part? }
         // else_part = { "else" ~ (block | if_stmt) }
@@ -887,10 +1045,13 @@ impl Parser {
             parse_error!("if statement missing condition")
                 .with_context(self.context_from_span(&parent_span))
         })?)?;
-        let then_branch = self.parse_block(inner.next().ok_or_else(|| {
-            parse_error!("if statement missing then branch")
-                .with_context(self.context_from_span(&parent_span))
-        })?)?;
+        let then_branch = self.parse_block(
+            inner.next().ok_or_else(|| {
+                parse_error!("if statement missing then branch")
+                    .with_context(self.context_from_span(&parent_span))
+            })?,
+            type_params,
+        )?;
 
         let mut else_branch = None;
         if let Some(else_pair) = inner.next() {
@@ -900,9 +1061,9 @@ impl Parser {
                     .with_context(self.context_from_span(&parent_span))
             })?;
             let else_block = match else_content.as_rule() {
-                Rule::block => self.parse_block(else_content)?,
+                Rule::block => self.parse_block(else_content, type_params)?,
                 Rule::if_stmt => {
-                    let if_stmt = self.parse_if_stmt(else_content)?;
+                    let if_stmt = self.parse_if_stmt(else_content, type_params)?;
                     Block {
                         stmts: vec![if_stmt],
                     }
@@ -925,7 +1086,7 @@ impl Parser {
         })
     }
 
-    fn parse_while_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+    fn parse_while_stmt(&self, pair: Pair<Rule>, type_params: &[&str]) -> CompileResult<Stmt> {
         let parent_span = pair.as_span();
         let span = Span::from_pest(&parent_span);
         // while_stmt = { "while" ~ expr ~ block }
@@ -934,17 +1095,20 @@ impl Parser {
             parse_error!("while statement missing condition")
                 .with_context(self.context_from_span(&parent_span))
         })?)?;
-        let body = self.parse_block(inner.next().ok_or_else(|| {
-            parse_error!("while statement missing body")
-                .with_context(self.context_from_span(&parent_span))
-        })?)?;
+        let body = self.parse_block(
+            inner.next().ok_or_else(|| {
+                parse_error!("while statement missing body")
+                    .with_context(self.context_from_span(&parent_span))
+            })?,
+            type_params,
+        )?;
         Ok(Stmt {
             kind: StmtKind::While { cond, body },
             span,
         })
     }
 
-    fn parse_for_stmt(&self, pair: Pair<Rule>) -> CompileResult<Stmt> {
+    fn parse_for_stmt(&self, pair: Pair<Rule>, type_params: &[&str]) -> CompileResult<Stmt> {
         let parent_span = pair.as_span();
         let span = Span::from_pest(&parent_span);
         // for_stmt = { "for" ~ identifier ~ "in" ~ expr ~ block }
@@ -957,10 +1121,13 @@ impl Parser {
             parse_error!("for statement missing iterable")
                 .with_context(self.context_from_span(&parent_span))
         })?)?;
-        let body = self.parse_block(inner.next().ok_or_else(|| {
-            parse_error!("for statement missing body")
-                .with_context(self.context_from_span(&parent_span))
-        })?)?;
+        let body = self.parse_block(
+            inner.next().ok_or_else(|| {
+                parse_error!("for statement missing body")
+                    .with_context(self.context_from_span(&parent_span))
+            })?,
+            type_params,
+        )?;
         Ok(Stmt {
             kind: StmtKind::For { var, iter, body },
             span,

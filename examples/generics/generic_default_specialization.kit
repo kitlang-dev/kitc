@@ -1,0 +1,16 @@
+include "stdio.h";
+
+default Numeric as Int;
+
+trait Numeric() {}
+
+implement Numeric for Int {}
+
+function process[T: Numeric](): Int {
+    return 42;
+}
+
+function main() {
+    var r = process();
+    printf("%i\n", r);
+}

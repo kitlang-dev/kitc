@@ -104,6 +104,7 @@ pub fn register_declarations(
 
         let struct_def = StructDefinition {
             name: s.name.clone(),
+            type_params: vec![],
             fields,
             is_public: true,
             metadata: vec![],
@@ -142,6 +143,7 @@ pub fn register_declarations(
 
         let struct_def = StructDefinition {
             name: u.name.clone(),
+            type_params: vec![],
             fields,
             is_public: true,
             metadata: vec![],
@@ -167,6 +169,7 @@ pub fn register_declarations(
     for e in &decls.enums {
         let mut enum_def = EnumDefinition {
             name: e.name.clone(),
+            type_params: vec![],
             variants: vec![],
             is_public: true,
             metadata: vec![],

@@ -1,0 +1,16 @@
+include "stdio.h";
+
+trait Hashable() {
+}
+
+implement Hashable for Int {
+}
+
+struct Container[T: Hashable] {
+    var value: T;
+}
+
+function main() {
+    var c: Container[Int] = struct Container { value: 7 };
+    printf("%i\n", c.value);
+}

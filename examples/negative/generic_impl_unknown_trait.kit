@@ -1,0 +1,16 @@
+include "stdio.h";
+
+struct Point {
+    var x: Int;
+}
+
+implement NonexistentTrait for Point {
+    function describe(): Int {
+        return this.x;
+    }
+}
+
+function main() {
+    var p: Point = struct Point { x:1 };
+    printf("%i\n", p.describe());
+}

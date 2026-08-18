@@ -7,7 +7,7 @@ COMMENT_LINE = _{ "//" ~ (!NEWLINE ~ ANY)* ~ NEWLINE }
 var_kw = { "var" }
 const_kw = { "const" }
 
-program = _{ SOI ~ (import_stmt | include_stmt | function_decl | var_decl | type_def | trait_def | trait_impl | rule_set | typedef_stmt | using_stmt)* ~ EOI }
+program = _{ SOI ~ (import_stmt | include_stmt | function_decl | var_decl | type_def | trait_def | trait_impl | default_decl | rule_set | typedef_stmt | using_stmt)* ~ EOI }
 
 import_stmt = { "import" ~ import_path ~ ";" }
 include_stmt = { "include" ~ string ~ ("=>" ~ string)? ~ ";" }
@@ -15,7 +15,7 @@ path = { identifier ~ ("." ~ identifier)* }
 import_path = { identifier ~ ("." ~ identifier)* ~ ("." ~ ("**" | "*"))? }
 
 function_decl = {
-    metadata_and_modifiers ~ "function" ~ identifier ~ "(" ~ params? ~ ")" ~ (":" ~ type_annotation)? ~ block
+    metadata_and_modifiers ~ "function" ~ identifier ~ type_params? ~ "(" ~ params? ~ ")" ~ (":" ~ type_annotation)? ~ (block | ";")
 }
 
 params = { param ~ ("," ~ param)* }
@@ -103,10 +103,17 @@ metadata_and_modifiers = { (metadata | modifier)* }
 metadata = { "#[" ~ identifier ~ "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" ~ "]" | "#[" ~ identifier ~ "]" }
 modifier = { "public" | "private" | "inline" | "static" }
 type_params = { "[" ~ (type_param ~ ("," ~ type_param)*)? ~ "]" }
-type_param = { identifier ~ ("=" ~ type_annotation)? }
+// A type parameter optionally carries trait constraints (`T: Hashable` or `T:: A | B`)
+// and/or a default type (`T = Int`), matching the reference Kit grammar.
+type_param = { identifier ~ type_constraints? ~ ("=" ~ type_annotation)? }
+type_constraints = { ":" ~ type_annotation | "::" ~ type_annotation ~ ("|" ~ type_annotation)* }
 
 trait_def = { metadata_and_modifiers ~ "trait" ~ identifier ~ type_params? ~ "(" ~ (type_param ~ ("," ~ type_param)*)? ~ ")" ~ "{" ~ (function_decl | var_decl)* ~ "}" }
 trait_impl = { metadata_and_modifiers ~ "implement" ~ type_annotation ~ type_params? ~ "for" ~ type_annotation ~ "{" ~ (function_decl | var_decl)* ~ "}" }
+
+// `default Trait as Type` specialization: a constrained type variable with no other source
+// of information defaults to `Type` when constrained by `Trait`.
+default_decl = { "default" ~ type_annotation ~ "as" ~ type_annotation ~ ";" }
 
 expr = { assign }
 assign = { logical_or ~ ASSIGN_OP ~ assign | logical_or }

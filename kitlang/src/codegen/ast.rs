@@ -4,6 +4,7 @@ use crate::error::Span;
 use super::ModulePath;
 use super::type_ast::{
     EnumDefinition, FieldInit, ImplDefinition, RuleSet, StructDefinition, TraitDefinition, TypeDef,
+    TypeParam,
 };
 
 /// Represents a metadata annotation (e.g., `#[extern]`, `#[inline]`, `#[meta(args)]`).
@@ -101,6 +102,8 @@ impl Include {
 pub struct Function {
     /// Function name.
     pub name: String,
+    /// Generic type parameters (empty for concrete functions).
+    pub type_params: Vec<TypeParam>,
     /// List of function parameters.
     pub params: Vec<Param>,
     /// Return type annotation (`None` for void inference).
@@ -222,7 +225,7 @@ pub struct MatchArm {
 pub struct MatchStmt {
     /// The expression to match against.
     pub expr: Box<Expr>,
-    /// The list of match arms (pattern → body).
+    /// The list of match arms (pattern -> body).
     pub arms: Vec<MatchArm>,
     pub span: Span,
 }
@@ -450,6 +453,8 @@ pub struct Program {
     pub rulesets: Vec<RuleSet>,
     /// Type alias definitions.
     pub typedefs: Vec<TypeDef>,
+    /// Default specializations (`default Trait as Type`), gathered across modules.
+    pub defaults: Vec<DefaultSpecialization>,
 }
 
 impl Program {
@@ -465,6 +470,18 @@ impl Program {
             impls: Vec::new(),
             rulesets: Vec::new(),
             typedefs: Vec::new(),
+            defaults: Vec::new(),
         }
     }
+}
+
+/// A `default Trait as Type` specialization declaration.
+///
+/// Records that an otherwise-unresolvable type variable constrained by `trait_name` should be
+/// specialized (defaulted) to `default_type` so the fixpoint can keep making progress. Populated by
+/// the parser from `default Trait as Type;` statements and gathered across modules during merging.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DefaultSpecialization {
+    pub trait_name: String,
+    pub default_type: Type,
 }

@@ -2,11 +2,13 @@ use super::ast::{
     Attributed, Function, GlobalDecl, Literal, MetaArg, Metadata, has_meta, is_unmangled,
 };
 use super::ast::{Block, Program};
-use super::frontend::Compiler;
+use super::frontend::{Compiler, validate_generics};
+use super::inference::TypeInferencer as MonoInferencer;
 use super::module::{Module, ModulePath, ModuleRegistry};
+use super::monomorph::monomorph_name;
 use super::parser::Parser;
 use super::type_ast::{EnumDefinition, EnumVariant, StructDefinition};
-use super::types::TypeId;
+use super::types::{Type, TypeId};
 use crate::KitParser;
 use crate::Rule;
 use crate::codegen::NoOpProgress;
@@ -36,7 +38,7 @@ fn parse_one_function(source: &str) -> Function {
     let parser = Parser::new();
     pairs
         .filter(|p| p.as_rule() == Rule::function_decl)
-        .map(|p| parser.parse_function(p).unwrap())
+        .map(|p| parser.parse_function(p, &[]).unwrap())
         .next()
         .expect("expected one function_decl")
 }
@@ -90,6 +92,7 @@ fn make_extern_mod(path: ModulePath, name: &str) -> Module {
     program.module_path = Some(path.clone());
     program.functions = vec![Function {
         name: name.to_string(),
+        type_params: vec![],
         params: vec![],
         return_type: None,
         inferred_return: None,
@@ -111,6 +114,7 @@ fn make_extern_struct_mod(path: ModulePath) -> Module {
     program.module_path = Some(path.clone());
     program.structs = vec![StructDefinition {
         name: "Foo".to_string(),
+        type_params: vec![],
         fields: vec![],
         is_public: true,
         metadata: meta("extern"),
@@ -123,6 +127,7 @@ fn make_extern_enum_mod(path: ModulePath) -> Module {
     program.module_path = Some(path.clone());
     program.enums = vec![EnumDefinition {
         name: "MyEnum".to_string(),
+        type_params: vec![],
         variants: vec![],
         is_public: true,
         metadata: meta("extern"),
@@ -208,6 +213,7 @@ fn test_metadata_meta_arg_literal() {
 fn test_function_is_unmangled_extern() {
     let f = Function {
         name: "foo".to_string(),
+        type_params: vec![],
         params: vec![],
         return_type: None,
         inferred_return: None,
@@ -222,6 +228,7 @@ fn test_function_is_unmangled_extern() {
 fn test_function_is_unmangled_expose() {
     let f = Function {
         name: "foo".to_string(),
+        type_params: vec![],
         params: vec![],
         return_type: None,
         inferred_return: None,
@@ -236,6 +243,7 @@ fn test_function_is_unmangled_expose() {
 fn test_function_no_metadata() {
     let f = Function {
         name: "foo".to_string(),
+        type_params: vec![],
         params: vec![],
         return_type: None,
         inferred_return: None,
@@ -264,6 +272,7 @@ fn test_global_decl_is_unmangled() {
 fn test_struct_is_unmangled_extern() {
     let s = StructDefinition {
         name: "Foo".to_string(),
+        type_params: vec![],
         fields: vec![],
         is_public: true,
         metadata: meta("extern"),
@@ -275,6 +284,7 @@ fn test_struct_is_unmangled_extern() {
 fn test_struct_is_unmangled_expose() {
     let s = StructDefinition {
         name: "Foo".to_string(),
+        type_params: vec![],
         fields: vec![],
         is_public: true,
         metadata: meta("expose"),
@@ -286,6 +296,7 @@ fn test_struct_is_unmangled_expose() {
 fn test_struct_no_metadata() {
     let s = StructDefinition {
         name: "Foo".to_string(),
+        type_params: vec![],
         fields: vec![],
         is_public: true,
         metadata: vec![],
@@ -297,6 +308,7 @@ fn test_struct_no_metadata() {
 fn test_enum_is_unmangled_extern() {
     let e = EnumDefinition {
         name: "Foo".to_string(),
+        type_params: vec![],
         variants: vec![],
         is_public: true,
         metadata: meta("extern"),
@@ -602,4 +614,215 @@ fn test_extern_c_output_contains_extern_prefix() {
     );
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn generic_function_type_params_parsed() {
+    let f = parse_one_function("public function id[T](value: T): T { return value; }\n");
+    assert_eq!(f.type_params.len(), 1);
+    assert_eq!(f.type_params[0].name, "T");
+    assert_eq!(f.params[0].annotation, Some(Type::TypeParam("T".into())));
+    assert_eq!(f.return_type, Some(Type::TypeParam("T".into())));
+}
+
+#[test]
+fn generic_function_type_params_with_constraints_parsed() {
+    let f =
+        parse_one_function("public function id[T :: Printable](value: T): T { return value; }\n");
+    assert_eq!(f.type_params.len(), 1);
+    assert_eq!(f.type_params[0].name, "T");
+    assert_eq!(
+        f.type_params[0].constraints,
+        vec![Type::Named("Printable".into())]
+    );
+}
+
+#[test]
+fn generic_struct_type_params_parsed() {
+    let s = parse_one_struct("struct Box[T] { var value: T; }\n");
+    assert_eq!(s.type_params.len(), 1);
+    assert_eq!(s.type_params[0].name, "T");
+    assert_eq!(s.fields[0].annotation, Some(Type::TypeParam("T".into())));
+}
+
+#[test]
+fn generic_application_parses_as_instance() {
+    let f = parse_one_function("public function box_it(b: Box[Int]): Void { }\n");
+    assert_eq!(
+        f.params[0].annotation,
+        Some(Type::Instance {
+            base: "Box".into(),
+            args: vec![Type::from_kit("Int")],
+        })
+    );
+}
+
+#[test]
+fn generic_type_param_default_parsed() {
+    let f = parse_one_function("public function id[T = Int](value: T): T { return value; }\n");
+    assert_eq!(f.type_params.len(), 1);
+    assert_eq!(f.type_params[0].default, Some(Type::from_kit("Int")));
+}
+
+fn program_from(functions: Vec<Function>, structs: Vec<StructDefinition>) -> Program {
+    Program {
+        globals: vec![],
+        functions,
+        structs,
+        enums: vec![],
+        typedefs: vec![],
+        traits: vec![],
+        impls: vec![],
+        rulesets: vec![],
+        module_path: None,
+        defaults: vec![],
+    }
+}
+
+#[test]
+fn validate_generics_accepts_declared_type_params() {
+    let f = parse_one_function("public function id[T](value: T): T { return value; }\n");
+    let prog = program_from(vec![f], vec![]);
+    validate_generics(&prog).unwrap();
+}
+
+#[test]
+fn validate_generics_rejects_wrong_arity() {
+    let f = parse_one_function("public function box_it(b: Box[Int, Int]): Void { }\n");
+    let s = parse_one_struct("struct Box[T] { var value: T; }\n");
+    let prog = program_from(vec![f], vec![s]);
+    let err = validate_generics(&prog).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("expects 1 type argument(s), got 2"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn validate_generics_rejects_application_of_non_generic_type() {
+    let f = parse_one_function("public function box_it(b: Int[Int]): Void { }\n");
+    let prog = program_from(vec![f], vec![]);
+    let err = validate_generics(&prog).unwrap_err();
+    assert!(
+        err.to_string().contains("is not generic"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn validate_generics_accepts_type_param_in_body() {
+    let f = parse_one_function("public function id[T](): Void { var x: T; }\n");
+    let prog = program_from(vec![f], vec![]);
+    validate_generics(&prog).unwrap();
+}
+
+// --- Monomorphization ---
+
+/// Run the inference/monomorphization fixpoint on `prog`, mutating it in place exactly like
+/// `Compiler::compile` does.
+fn run_fixpoint(inferencer: &mut MonoInferencer, prog: &mut Program) {
+    inferencer.register_templates(&ModulePath::new(), prog);
+    loop {
+        inferencer.infer_program(prog).unwrap();
+        if inferencer.generate_monomorphs(prog).unwrap() == 0 {
+            break;
+        }
+    }
+    inferencer.validate_monomorphs().unwrap();
+}
+
+#[test]
+fn monomorph_name_is_deterministic_and_type_sensitive() {
+    let a = monomorph_name("Box", &[Type::Int]);
+    let b = monomorph_name("Box", &[Type::Int]);
+    let c = monomorph_name("Box", &[Type::Float]);
+    let d = monomorph_name("Other", &[Type::Int]);
+    assert_eq!(a, b);
+    assert_ne!(
+        a, c,
+        "different args must produce different monomorph names"
+    );
+    assert_ne!(
+        a, d,
+        "different bases must produce different monomorph names"
+    );
+}
+
+#[test]
+fn generic_function_call_monomorphizes() {
+    let generic =
+        parse_one_function("public function genericFunction[T](fmt: CString, v: T) { }\n");
+    let main = parse_one_function(
+        "function main() { genericFunction(\"x\", 1); genericFunction(\"y\", 2.0); }\n",
+    );
+    let mut prog = program_from(vec![generic, main], vec![]);
+
+    let mut inferencer = MonoInferencer::new();
+    let function_count = prog.functions.len();
+    run_fixpoint(&mut inferencer, &mut prog);
+
+    assert!(
+        prog.functions.len() > function_count,
+        "expected the fixpoint to add monomorphs for both instantiations"
+    );
+    let mono_names: Vec<String> = prog
+        .functions
+        .iter()
+        .map(|f| f.name.clone())
+        .filter(|n| n.starts_with("genericFunction_"))
+        .collect();
+    assert!(
+        !mono_names.is_empty(),
+        "expected monomorphs of 'genericFunction', got none",
+    );
+    assert_eq!(
+        mono_names.len(),
+        2,
+        "one monomorph per distinct instantiation: {mono_names:?}",
+    );
+}
+
+#[test]
+fn generic_struct_init_realizes_monomorph() {
+    let struct_def = parse_one_struct("struct Box[T] { var value: T; }\n");
+    let main = parse_one_function(
+        // The annotation instantiates the monomorph; the assignment fills it.
+        "function main() { var b: Box[Int]; b.value = 42; }\n",
+    );
+    let mut prog = program_from(vec![main], vec![struct_def]);
+
+    let mut inferencer = MonoInferencer::new();
+    run_fixpoint(&mut inferencer, &mut prog);
+
+    let mono_structs: Vec<&str> = prog.structs.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        inferencer.symbols().lookup_struct("Box").is_none(),
+        "the template itself must not register as a concrete struct",
+    );
+    assert!(
+        mono_structs.iter().any(|n| n.starts_with("Box_")),
+        "expected a monomorphized 'Box' struct, got {mono_structs:?}"
+    );
+}
+
+#[test]
+fn pending_generics_reject_never_resolved_parameters() {
+    let struct_def = parse_one_struct("struct Either[A, B] { var a: A; var b: B; }\n");
+    let main = parse_one_function("function main() { var e: Either; }\n");
+    let mut prog = program_from(vec![main], vec![struct_def]);
+
+    let mut inferencer = MonoInferencer::new();
+    inferencer.register_templates(&ModulePath::new(), &prog);
+    loop {
+        inferencer.infer_program(&mut prog).unwrap();
+        if inferencer.generate_monomorphs(&mut prog).unwrap() == 0 {
+            break;
+        }
+    }
+    let err = inferencer.validate_monomorphs().unwrap_err();
+    assert!(
+        err.to_string().contains("cannot determine type parameters"),
+        "unexpected error: {err}"
+    );
 }

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Component as PathComponent, Path, PathBuf};
@@ -11,13 +11,14 @@ use pest::Parser;
 use pest::error::{InputLocation, LineColLocation};
 
 use crate::codegen::{
-    ast::{Include, Program},
+    ast::{Expr, ExprKind, Include, Program, Stmt, StmtKind},
     inference::TypeInferencer,
     module::{ImportType, Module, ModuleImport, ModulePath, ModuleRegistry},
     parser::Parser as CodeParser,
     progress::Progress,
     transpile::{self, CodegenCtx},
-    type_ast::UsingClause,
+    type_ast::{TypeParam, UsingClause},
+    types::Type,
 };
 use crate::error::{self, CompileResult};
 use crate::{KitParser, Rule, error::CompilationError};
@@ -137,7 +138,7 @@ fn collect_kit_files_in_dir_shallow(dir: &Path, base_path: &ModulePath) -> Vec<M
         .collect()
 }
 
-/// Recursively walk a directory tree collecting `.kit` files, used for `**` double-wildcard imports.
+/// Recursively walk a directory tree collecting `.kit` files, for `**` double-wildcard imports.
 fn walk_kit_files(dir: &Path, base_path: &ModulePath, results: &mut Vec<ModulePath>) {
     let Ok(dir) = dir.canonicalize() else {
         return;
@@ -264,6 +265,7 @@ fn parse_kit_file(file: &Path) -> CompileResult<ParsedFile> {
     let mut impls = Vec::new();
     let mut rulesets = Vec::new();
     let mut typedefs = Vec::new();
+    let mut defaults = Vec::new();
     let mut usings = Vec::new();
 
     for pair in pairs {
@@ -271,7 +273,7 @@ fn parse_kit_file(file: &Path) -> CompileResult<ParsedFile> {
             Rule::include_stmt => includes.push(parser.parse_include(pair)?),
             Rule::import_stmt => imports.push(parser.parse_import(pair)?),
             Rule::var_decl => globals.push(parser.parse_global_var_decl(&pair)?),
-            Rule::function_decl => functions.push(parser.parse_function(pair)?),
+            Rule::function_decl => functions.push(parser.parse_function(pair, &[])?),
             Rule::type_def => {
                 let mut inner = pair.into_inner();
                 let (metadata, is_public) = CodeParser::parse_metadata_and_modifiers(inner.next());
@@ -295,6 +297,7 @@ fn parse_kit_file(file: &Path) -> CompileResult<ParsedFile> {
             }
             Rule::trait_def => traits.push(parser.parse_trait_def(pair)?),
             Rule::trait_impl => impls.push(parser.parse_trait_impl(pair)?),
+            Rule::default_decl => defaults.push(parser.parse_default_decl(pair)?),
             Rule::rule_set => rulesets.push(parser.parse_rule_set(pair)?),
             Rule::typedef_stmt => typedefs.push(parser.parse_typedef(pair)?),
             Rule::using_stmt => usings.extend(parser.parse_using(pair)?),
@@ -312,6 +315,7 @@ fn parse_kit_file(file: &Path) -> CompileResult<ParsedFile> {
         impls,
         rulesets,
         typedefs,
+        defaults,
     };
 
     Ok(ParsedFile {
@@ -508,11 +512,404 @@ pub(crate) fn merge_modules_for_inference(
             merged.structs.extend(module.program.structs.clone());
             merged.enums.extend(module.program.enums.clone());
             merged.typedefs.extend(module.program.typedefs.clone());
+            merged.traits.extend(module.program.traits.iter().cloned());
+            merged.impls.extend(module.program.impls.iter().cloned());
+            merged
+                .defaults
+                .extend(module.program.defaults.iter().cloned());
         }
     }
 
     merged.module_path = sorted_paths.last().cloned();
     merged
+}
+
+/// Validate generic declarations and applications before type inference.
+///
+/// All checks are syntactic; they run on the merged program before inference and the
+/// monomorphization fixpoint:
+///
+/// - every `Type::Instance` must reference a generic definition and supply no
+///   more type arguments than the definition declares (fewer are allowed:
+///   missing arguments become fresh unknowns, mirroring `makeGeneric` in the
+///   reference, e.g. `var b: WrapperType;`);
+/// - type parameters used in generic bodies must be declared by that generic
+///   definition (or an enclosing one, e.g. a trait method body).
+///
+/// # Errors
+///
+/// Returns `TypeError` for an `Instance` that references an unknown generic or
+/// supplies too many type arguments, or a `TypeParam` used outside its generic.
+pub(crate) fn validate_generics(merged: &Program) -> CompileResult<()> {
+    let arity: HashMap<&str, usize> = merged
+        .structs
+        .iter()
+        .filter(|s| !s.type_params.is_empty())
+        .map(|s| (s.name.as_str(), s.type_params.len()))
+        .chain(
+            merged
+                .enums
+                .iter()
+                .filter(|e| !e.type_params.is_empty())
+                .map(|e| (e.name.as_str(), e.type_params.len())),
+        )
+        .collect();
+
+    for instance in collect_instances(merged) {
+        // `collect_instances` only yields `Type::Instance`, so this binding can never fail. The
+        // `else` branch is a guard against later changes to `collect_instances`.
+        let Type::Instance { base, args } = &instance else {
+            continue;
+        };
+
+        // A non-generic type was used with type arguments (e.g. using `File` as `File[Int]`).
+        let expected = arity.get(base.as_str()).copied().ok_or_else(|| {
+            CompilationError::TypeError(format!(
+                "type '{}' is not generic but is used with type arguments",
+                base,
+            ))
+        })?;
+
+        // Encountered a genuine user error where more type arguments than the generic declares
+        // (e.g. `List[K, V]`) for a single-parameter `List[T]`.
+        if args.len() > expected {
+            return Err(CompilationError::TypeError(format!(
+                "type '{}' expects {} type argument(s), got {}",
+                base,
+                expected,
+                args.len(),
+            )));
+        }
+    }
+
+    validate_type_param_scopes(merged)
+}
+
+/// All `Type::Instance` occurrences reachable from a program's definitions, cloned so the returned
+/// list is independent of the program's lifetime.
+fn collect_instances(merged: &Program) -> Vec<Type> {
+    let mut out = Vec::new();
+
+    let visit = |t: &Type, out: &mut Vec<Type>| {
+        if let Type::Instance { .. } = t {
+            out.push(t.clone());
+        }
+    };
+
+    for s in &merged.structs {
+        for f in &s.fields {
+            walk_type(&f.annotation, &mut |t| visit(t, &mut out));
+        }
+    }
+
+    for e in &merged.enums {
+        for v in &e.variants {
+            for a in &v.args {
+                walk_type(&a.annotation, &mut |t| visit(t, &mut out));
+            }
+        }
+    }
+
+    for f in &merged.functions {
+        for p in &f.params {
+            walk_type(&p.annotation, &mut |t| visit(t, &mut out));
+        }
+        walk_type(&f.return_type, &mut |t| visit(t, &mut out));
+        for stmt in &f.body.stmts {
+            walk_stmt_types(stmt, &mut |t| visit(t, &mut out));
+        }
+    }
+
+    for g in &merged.globals {
+        walk_type(&g.annotation, &mut |t| visit(t, &mut out));
+    }
+
+    for t in &merged.traits {
+        for m in &t.methods {
+            for p in &m.params {
+                walk_type(&p.annotation, &mut |t| visit(t, &mut out));
+            }
+            walk_type(&m.return_type, &mut |t| visit(t, &mut out));
+        }
+    }
+
+    for i in &merged.impls {
+        for m in &i.methods {
+            for p in &m.params {
+                walk_type(&p.annotation, &mut |t| visit(t, &mut out));
+            }
+            walk_type(&m.return_type, &mut |t| visit(t, &mut out));
+        }
+    }
+
+    out
+}
+
+/// Visit every type in an expression statement tree, invoking `visit` on
+/// `Type::Instance` leaves found.
+fn walk_stmt_types(stmt: &Stmt, visit: &mut dyn FnMut(&Type)) {
+    match &stmt.kind {
+        StmtKind::VarDecl {
+            annotation, init, ..
+        } => {
+            walk_type(annotation, visit);
+            if let Some(init) = init {
+                walk_expr_types(init, visit);
+            }
+        }
+        StmtKind::Expr(e) => walk_expr_types(e, visit),
+        StmtKind::Return(e) => {
+            if let Some(e) = e {
+                walk_expr_types(e, visit);
+            }
+        }
+        StmtKind::Defer { body } => walk_stmt_types(body, visit),
+        StmtKind::Block(b) => {
+            for s in &b.stmts {
+                walk_stmt_types(s, visit);
+            }
+        }
+        StmtKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            walk_expr_types(cond, visit);
+            for s in &then_branch.stmts {
+                walk_stmt_types(s, visit);
+            }
+            if let Some(e) = else_branch {
+                for s in &e.stmts {
+                    walk_stmt_types(s, visit);
+                }
+            }
+        }
+        StmtKind::While { cond, body } => {
+            walk_expr_types(cond, visit);
+            for s in &body.stmts {
+                walk_stmt_types(s, visit);
+            }
+        }
+        StmtKind::For { iter, body, .. } => {
+            walk_expr_types(iter, visit);
+            for s in &body.stmts {
+                walk_stmt_types(s, visit);
+            }
+        }
+        StmtKind::Match(m) => {
+            walk_expr_types(&m.expr, visit);
+            for arm in &m.arms {
+                for s in &arm.body.stmts {
+                    walk_stmt_types(s, visit);
+                }
+            }
+        }
+        StmtKind::Break | StmtKind::Continue => {}
+    }
+}
+
+#[allow(clippy::only_used_in_recursion)]
+fn walk_expr_types(expr: &Expr, visit: &mut dyn FnMut(&Type)) {
+    match &expr.kind {
+        ExprKind::BinaryOp { left, right, .. } => {
+            walk_expr_types(left, visit);
+            walk_expr_types(right, visit);
+        }
+        ExprKind::UnaryOp { expr, .. } => walk_expr_types(expr, visit),
+        ExprKind::Assign { left, right, .. } => {
+            walk_expr_types(left, visit);
+            walk_expr_types(right, visit);
+        }
+        ExprKind::Call { callee, args } => {
+            walk_expr_types(callee, visit);
+            for a in args {
+                walk_expr_types(a, visit);
+            }
+        }
+        ExprKind::Index { expr, index } => {
+            walk_expr_types(expr, visit);
+            walk_expr_types(index, visit);
+        }
+        ExprKind::FieldAccess { expr, .. } => walk_expr_types(expr, visit),
+        ExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            walk_expr_types(cond, visit);
+            walk_expr_types(then_branch, visit);
+            walk_expr_types(else_branch, visit);
+        }
+        ExprKind::RangeLiteral { start, end } => {
+            walk_expr_types(start, visit);
+            walk_expr_types(end, visit);
+        }
+        ExprKind::StructInit { fields, .. } => {
+            for f in fields {
+                walk_expr_types(&f.value, visit);
+            }
+        }
+        ExprKind::ArrayLiteral { elements } => {
+            for e in elements {
+                walk_expr_types(e, visit);
+            }
+        }
+        ExprKind::TupleLit { elements } => {
+            for e in elements {
+                walk_expr_types(e, visit);
+            }
+        }
+        ExprKind::EnumInit { args, .. } => {
+            for a in args {
+                walk_expr_types(a, visit);
+            }
+        }
+        ExprKind::Identifier { .. } | ExprKind::Literal { .. } | ExprKind::EnumVariant { .. } => {}
+    }
+}
+
+fn walk_type(t: &Option<Type>, visit: &mut dyn FnMut(&Type)) {
+    let inner = |t: &Type, visit: &mut dyn FnMut(&Type)| match t {
+        Type::Instance { args, .. } => {
+            visit(t);
+            for a in args {
+                walk_type(&Some(a.clone()), visit);
+            }
+        }
+        Type::Ptr(inner) => walk_type(&Some((**inner).clone()), visit),
+        Type::Tuple(elems) => {
+            for e in elems {
+                walk_type(&Some(e.clone()), visit);
+            }
+        }
+        Type::Function { param_tys, ret_ty } => {
+            for p in param_tys {
+                walk_type(&Some(p.clone()), visit);
+            }
+            walk_type(&Some((**ret_ty).clone()), visit);
+        }
+        _ => {}
+    };
+    if let Some(t) = t {
+        inner(t, visit);
+    }
+}
+
+/// Every `Type::TypeParam` in a definition's signature must be declared in that definition's
+/// `type_params` (or, for trait/impl methods, the enclosing trait's).
+fn validate_type_param_scopes(merged: &Program) -> CompileResult<()> {
+    let structs: HashMap<&str, Vec<&str>> = merged
+        .structs
+        .iter()
+        .map(|s| (s.name.as_str(), names_of(&s.type_params)))
+        .collect();
+
+    let enums: HashMap<&str, Vec<&str>> = merged
+        .enums
+        .iter()
+        .map(|e| (e.name.as_str(), names_of(&e.type_params)))
+        .collect();
+
+    for s in &merged.structs {
+        let declared = structs
+            .get(s.name.as_str())
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+        for f in &s.fields {
+            check_type_param_refs(&f.annotation, declared, &s.name)?;
+        }
+    }
+
+    for e in &merged.enums {
+        let declared = enums
+            .get(e.name.as_str())
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+
+        for v in &e.variants {
+            for a in &v.args {
+                check_type_param_refs(&a.annotation, declared, &e.name)?;
+            }
+        }
+    }
+
+    for f in &merged.functions {
+        let declared = names_of(&f.type_params);
+        for p in &f.params {
+            check_type_param_refs(&p.annotation, &declared, &f.name)?;
+        }
+        check_type_param_refs(&f.return_type, &declared, &f.name)?;
+        for stmt in &f.body.stmts {
+            check_stmt_type_param_refs(stmt, &declared, &f.name)?;
+        }
+    }
+
+    for t in &merged.traits {
+        let declared = names_of(&t.params);
+        for m in &t.methods {
+            for p in &m.params {
+                check_type_param_refs(&p.annotation, &declared, &t.name)?;
+            }
+            check_type_param_refs(&m.return_type, &declared, &t.name)?;
+        }
+    }
+
+    for i in &merged.impls {
+        let declared = names_of(&i.params);
+        for m in &i.methods {
+            for p in &m.params {
+                check_type_param_refs(&p.annotation, &declared, &i.name)?;
+            }
+            check_type_param_refs(&m.return_type, &declared, &i.name)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn names_of(params: &[TypeParam]) -> Vec<&str> {
+    params.iter().map(|tp| tp.name.as_str()).collect()
+}
+
+/// Check a single type annotation for unknown type-parameter references.
+fn check_type_param_refs(t: &Option<Type>, declared: &[&str], owner: &str) -> CompileResult<()> {
+    let mut err: Option<CompilationError> = None;
+    let mut check = |ty: &Type| {
+        if let Type::TypeParam(name) = ty
+            && !declared.contains(&name.as_str())
+            && err.is_none()
+        {
+            err = Some(CompilationError::TypeError(format!(
+                "type parameter '{}' used in '{}' is not declared",
+                name, owner,
+            )));
+        }
+    };
+    walk_type(t, &mut check);
+    match err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+fn check_stmt_type_param_refs(stmt: &Stmt, declared: &[&str], owner: &str) -> CompileResult<()> {
+    let mut err: Option<CompilationError> = None;
+    let mut check = |ty: &Type| {
+        if let Type::TypeParam(name) = ty
+            && !declared.contains(&name.as_str())
+            && err.is_none()
+        {
+            err = Some(CompilationError::TypeError(format!(
+                "type parameter '{}' used in '{}' is not declared",
+                name, owner,
+            )));
+        }
+    };
+    walk_stmt_types(stmt, &mut check);
+    match err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 impl Compiler {
@@ -621,12 +1018,17 @@ impl Compiler {
         Ok(sorted)
     }
 
+    /// Maximum number of inference/monomorphization passes (like the reference's
+    /// `ctxRecursionLimit`).
+    const MONOMORPH_PASS_LIMIT: usize = 64;
+
     /// Compile a Kit source file to an executable.
     ///
     /// The compilation pipeline:
     /// 1. Build the module dependency graph
     /// 2. Register C header declarations from includes
-    /// 3. Type inference on the merged program
+    /// 3. Type inference on the merged program, in a fixpoint that also
+    ///    generates monomorphs of generic templates
     /// 4. Generate per-module `.c` and `.h` files
     /// 5. Invoke the system C compiler to link everything into an executable
     pub fn compile(&mut self, progress: &dyn Progress) -> CompileResult<()> {
@@ -667,9 +1069,45 @@ impl Compiler {
 
         progress.stage("Type checking");
         let inference_start = Instant::now();
-        // Type inference on the merged program
+        // Type inference on the merged program, in a fixpoint with monomorph
+        // generation (mirrors the reference's `typeIterative`): every pass
+        // types concrete declarations and records generic applications; the
+        // realized monomorphs are merged in and re-typed on the next pass,
+        // until no new monomorphs are produced.
         let mut merged = merge_modules_for_inference(&self.registry, &sorted_paths);
-        self.inferencer.infer_program(&mut merged)?;
+        validate_generics(&merged)?;
+        for path in &sorted_paths {
+            if let Some(module) = self.registry.get(path) {
+                self.inferencer.register_templates(path, &module.program);
+                self.inferencer.register_impls(path, &module.program)?;
+            }
+        }
+        // Validate trait implementations (duplicate / missing trait / incomplete / mismatched
+        // signature) before codegen. Runs after every module's impls are registered; trait
+        // definitions come from the merged program so cross-module trait/impl pairs are checked
+        // consistently.
+        self.inferencer.validate_trait_impls(&merged.traits)?;
+        // Prepared impl methods are emitted and inferred like ordinary functions; appending them to
+        // the merged program lets the fixpoint infer their bodies and transpile emit them.
+        let impl_methods = std::mem::take(&mut self.inferencer.monomorphs.impl_methods);
+        merged.functions.extend(impl_methods);
+        let mut passes = 0;
+        loop {
+            self.inferencer.infer_program(&mut merged)?;
+            let new_monomorphs = self.inferencer.generate_monomorphs(&mut merged)?;
+            if new_monomorphs == 0 {
+                break;
+            }
+            passes += 1;
+            if passes > Self::MONOMORPH_PASS_LIMIT {
+                return Err(CompilationError::TypeError(format!(
+                    "Maximum number of compile passes exceeded while monomorphizing \
+                     generic definitions ({} passes)",
+                    passes,
+                )));
+            }
+        }
+        self.inferencer.validate_monomorphs()?;
         progress.stage_done("Type checking", inference_start.elapsed());
 
         progress.stage("Expanding defer statements");

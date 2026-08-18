@@ -126,6 +126,7 @@ fn test_declaration_registration() {
     }];
     program.functions = vec![Function {
         name: "my_func".to_string(),
+        type_params: vec![],
         params: vec![],
         return_type: None,
         inferred_return: None,
@@ -174,6 +175,7 @@ fn test_resolve_qualified_name_simple() {
     program.module_path = Some(mod_path.clone());
     program.functions = vec![Function {
         name: "add".to_string(),
+        type_params: vec![],
         params: vec![],
         return_type: None,
         inferred_return: None,
@@ -207,6 +209,7 @@ fn test_resolve_qualified_name_dotted() {
     program.module_path = Some(mod_path.clone());
     program.functions = vec![Function {
         name: "add".to_string(),
+        type_params: vec![],
         params: vec![],
         return_type: None,
         inferred_return: None,

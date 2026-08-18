@@ -40,6 +40,12 @@ pub use progress::{NoOpProgress, Progress, SimpleProgress};
 /// Hindley-Milner type inference engine.
 pub mod inference;
 
+/// Monomorphization of generic (template) definitions.
+pub mod monomorph;
+
+/// Specialization of constrained type variables via `default Trait as Type` declarations.
+pub mod specialize;
+
 /// C header parsing and FFI declaration integration.
 pub mod ffi;
 

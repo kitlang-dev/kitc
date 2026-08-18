@@ -1,0 +1,16 @@
+include "stdio.h";
+
+trait Hashable() {
+}
+
+struct NotHashable {
+    var x: Int;
+}
+
+struct Container[T: Hashable] {
+    var value: T;
+}
+
+function main() {
+    var c: Container[NotHashable] = struct Container { value: struct NotHashable { x: 1 } };
+}
