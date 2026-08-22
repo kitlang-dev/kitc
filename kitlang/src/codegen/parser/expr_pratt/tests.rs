@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use super::callee_name;
 use super::parse_kit_expr;
 use crate::codegen::ast::{Expr, ExprKind, Literal};
@@ -329,7 +331,7 @@ fn stress_deep_postfix_chain() {
     let mut src = String::from("a");
     for i in 0..100 {
         src.push('.');
-        src.push_str(&format!("f{i}"));
+        let _ = write!(src, "f{i}");
     }
     let e = p(&src);
     let mut depth = 0;
@@ -801,7 +803,7 @@ fn indirect_call_is_parsed() {
     }
 }
 
-/// `x++` - postfix `++` parses to PostIncrement.
+/// `x++` - postfix `++` parses to `PostIncrement`.
 #[test]
 fn postfix_increment_parses() {
     let e = p("x++");
@@ -827,7 +829,7 @@ fn postfix_increment_parses() {
     }
 }
 
-/// `x--` - postfix `--` parses to PostDecrement.
+/// `x--` - postfix `--` parses to `PostDecrement`.
 #[test]
 fn postfix_decrement_parses() {
     let e = p("x--");
@@ -853,7 +855,7 @@ fn postfix_decrement_parses() {
     }
 }
 
-/// `++x` - prefix `++` parses to PreIncrement.
+/// `++x` - prefix `++` parses to `PreIncrement`.
 #[test]
 fn prefix_increment_parses() {
     let e = p("++x");
@@ -879,7 +881,7 @@ fn prefix_increment_parses() {
     }
 }
 
-/// `--x` - prefix `--` parses to PreDecrement.
+/// `--x` - prefix `--` parses to `PreDecrement`.
 #[test]
 fn prefix_decrement_parses() {
     let e = p("--x");

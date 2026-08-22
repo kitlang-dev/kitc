@@ -67,6 +67,11 @@ pub fn extract_header(header_path: &str, config: &PreprocessConfig) -> FfiResult
 /// Preprocesses the source through includium first, then parses.
 /// Use this when the header source is already in memory.
 /// For already-preprocessed source, use `extract_from_preprocessed`.
+///
+/// # Errors
+///
+/// Returns `FfiError::Preprocess` if preprocessing fails or
+/// `FfiError::Parse` if parsing fails.
 pub fn extract_header_from_source(
     source: &str,
     config: &PreprocessConfig,
@@ -79,6 +84,10 @@ pub fn extract_header_from_source(
 ///
 /// Useful when the caller has already preprocessed the header, or when parsing
 /// test strings that contain no preprocessor directives.
+///
+/// # Errors
+///
+/// Returns `FfiError::Parse` if the source cannot be parsed.
 pub fn extract_from_preprocessed(source: &str) -> FfiResult<CDeclarations> {
     parse::parse_c_header(source)
 }

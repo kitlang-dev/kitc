@@ -84,6 +84,11 @@ impl TypeStore {
     }
 
     /// Bind a type variable to a specific type ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError::TypeError` if `var_id` does not exist or is
+    /// already bound.
     pub fn bind_type_var(&mut self, var_id: TypeVarId, ty: TypeId) -> CompileResult<()> {
         if let Some(existing) = self.type_vars.get_mut(var_id.0 as usize) {
             if let Some(binding) = existing.binding {
@@ -125,9 +130,14 @@ impl TypeStore {
         true
     }
 
-    /// Resolve a `TypeId` to its concrete Type.
+    /// Resolve a `TypeId` to its concrete type.
     ///
-    /// Follows type variable bindings. Returns error if any type variables remain unbound.
+    /// Follows type-variable bindings until a `Known` node is reached.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError::TypeError` if `id` is out of bounds, the
+    /// `TypeVarId` is missing, or a traversed variable is still unbound.
     pub fn resolve(&self, mut id: TypeId) -> CompileResult<Type> {
         loop {
             if id.0 as usize >= self.nodes.len() {
@@ -231,6 +241,10 @@ impl TypeStore {
     /// Unify two type IDs (the core inference algorithm).
     ///
     /// Makes two types agree by either binding unknowns or comparing known types structurally.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError::TypeError` if the two types are incompatible or a binding fails.
     pub fn unify(&mut self, a: TypeId, b: TypeId) -> CompileResult<()> {
         let rep_a = self.find_rep(a);
         let rep_b = self.find_rep(b);
@@ -491,7 +505,7 @@ pub enum Type {
     },
     /// Function type (e.g., `function (Int) -> Float`).
     /// Parameter and return types are stored by value. When needed for
-    /// unification, they are converted to TypeId via [`TypeStore::new_known`]
+    /// unification, they are converted to `TypeId` via [`TypeStore::new_known`]
     /// (see `unify_types` for the same pattern used by `Tuple`).
     Function {
         param_tys: Vec<Type>,
@@ -505,7 +519,7 @@ impl fmt::Display for Type {
             Type::Named(name) => write!(f, "{name}"),
             Type::TypeParam(name) => write!(f, "{name}"),
             Type::Instance { base, args } => {
-                let items: Vec<String> = args.iter().map(|t| t.to_string()).collect();
+                let items: Vec<String> = args.iter().map(ToString::to_string).collect();
                 write!(f, "{base}[{}]", items.join(", "))
             }
             Type::Ptr(inner) => write!(f, "Ptr({inner})"),
@@ -526,7 +540,7 @@ impl fmt::Display for Type {
             Type::Bool => write!(f, "Bool"),
             Type::CString => write!(f, "CString"),
             Type::Tuple(variants) => {
-                let items: Vec<String> = variants.iter().map(|t| t.to_string()).collect();
+                let items: Vec<String> = variants.iter().map(ToString::to_string).collect();
                 write!(f, "({})", items.join(", "))
             }
             Type::CArray(elem, size) => {
@@ -539,7 +553,7 @@ impl fmt::Display for Type {
             Type::Void => write!(f, "Void"),
             Type::Struct { name, .. } => write!(f, "{name}"),
             Type::Function { param_tys, ret_ty } => {
-                let params: Vec<String> = param_tys.iter().map(|t| t.to_string()).collect();
+                let params: Vec<String> = param_tys.iter().map(ToString::to_string).collect();
                 write!(f, "fn({}) -> {ret_ty}", params.join(", "))
             }
         }
@@ -738,6 +752,10 @@ impl BinaryOperator {
     }
 
     /// Construct a `BinaryOperator` from a Pest parse pair (matched on `Rule::*_op`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError::InvalidOperator` if `pair` does not match a known operator.
     pub fn from_rule_pair(pair: &Pair<Rule>) -> Result<Self, CompilationError> {
         Self::from_str(pair.as_str())
             .map_err(|_| CompilationError::InvalidOperator(pair.as_str().to_string()))
@@ -817,6 +835,10 @@ impl AssignmentOperator {
     }
 
     /// Construct an `AssignmentOperator` from a Pest parse pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError::InvalidOperator` if `pair` does not match a known operator.
     pub fn from_rule_pair(pair: &Pair<Rule>) -> Result<Self, CompilationError> {
         Self::from_str(pair.as_str())
             .map_err(|_| CompilationError::InvalidOperator(pair.as_str().to_string()))

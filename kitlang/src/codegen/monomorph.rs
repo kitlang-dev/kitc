@@ -282,7 +282,7 @@ pub(crate) fn signatures_match(decl: &Function, provided: &Function) -> bool {
     }
     for (a, b) in decl.params.iter().zip(provided.params.iter()) {
         match (a.annotation.as_ref(), b.annotation.as_ref()) {
-            (Some(x), Some(y)) if x.to_c_repr().name == y.to_c_repr().name => continue,
+            (Some(x), Some(y)) if x.to_c_repr().name == y.to_c_repr().name => {}
             _ => return false,
         }
     }
@@ -580,7 +580,7 @@ impl TypeInferencer {
     ) -> CompileResult<(String, Function)> {
         let symbol = impl_method_symbol(trait_name, for_type, &method.name);
         let mut prepared = method.clone();
-        prepared.name = symbol.clone();
+        prepared.name.clone_from(&symbol);
         // Prepend the synthesized `this` receiver parameter.
         let mut params = Vec::with_capacity(method.params.len() + 1);
         params.push(Param {
@@ -985,7 +985,7 @@ impl TypeInferencer {
         match def {
             TemplateDef::Struct(s) => {
                 let mut mono = s;
-                mono.name = mono_name.clone();
+                mono.name.clone_from(&mono_name);
                 // A monomorph is concrete: it is no longer a template.
                 mono.type_params.clear();
                 for field in &mut mono.fields {
@@ -1006,11 +1006,11 @@ impl TypeInferencer {
             }
             TemplateDef::Enum(e) => {
                 let mut mono = e;
-                mono.name = mono_name.clone();
+                mono.name.clone_from(&mono_name);
                 // A monomorph is concrete: it is no longer a template.
                 mono.type_params.clear();
                 for variant in &mut mono.variants {
-                    variant.parent = mono_name.clone();
+                    variant.parent.clone_from(&mono_name);
                     for arg in &mut variant.args {
                         arg.annotation = arg
                             .annotation
@@ -1031,7 +1031,7 @@ impl TypeInferencer {
             }
             TemplateDef::Function(f) => {
                 let mut mono = f;
-                mono.name = mono_name.clone();
+                mono.name.clone_from(&mono_name);
                 // A monomorph is concrete: it is no longer a template.
                 mono.type_params.clear();
                 for param in &mut mono.params {
@@ -1173,32 +1173,27 @@ impl TypeInferencer {
         let pending = std::mem::take(&mut self.monomorphs.pending);
         let mut new_count = 0;
         for entry in pending {
-            let args = match entry
+            let Ok(args) = entry
                 .params
                 .iter()
                 .map(|id| self.store.resolve(*id))
                 .collect::<Result<Vec<_>, _>>()
-            {
-                Ok(args) => args,
-                Err(_) => {
-                    // The parameters did not resolve this pass (they may never).
-                    // Record the failure for the final validation error.
-                    let names = self.template_param_names(&entry.base).unwrap_or_default();
-                    let first_unresolved = entry
-                        .params
-                        .iter()
-                        .zip(names.iter())
-                        .find_map(|(id, name)| {
-                            self.store.resolve(*id).is_err().then(|| name.clone())
-                        })
-                        .unwrap_or_else(|| "<unknown>".to_string());
+            else {
+                // The parameters did not resolve this pass (they may never).
+                // Record the failure for the final validation error.
+                let names = self.template_param_names(&entry.base).unwrap_or_default();
+                let first_unresolved = entry
+                    .params
+                    .iter()
+                    .zip(names.iter())
+                    .find_map(|(id, name)| self.store.resolve(*id).is_err().then(|| name.clone()))
+                    .unwrap_or_else(|| "<unknown>".to_string());
 
-                    self.monomorphs
-                        .unresolved
-                        .push((entry.base, first_unresolved));
+                self.monomorphs
+                    .unresolved
+                    .push((entry.base, first_unresolved));
 
-                    continue;
-                }
+                continue;
             };
 
             let (mono_name, was_new) = self.instantiate(&entry.base, &args)?;

@@ -57,7 +57,7 @@ impl CodegenCtx<'_> {
         let all_simple = enum_def.variants.iter().all(|v| v.args.is_empty());
 
         if all_simple {
-            self.write_simple_enum(&mut output, enum_def, &variant_module, &enum_type_name);
+            Self::write_simple_enum(&mut output, enum_def, &variant_module, &enum_type_name);
         } else {
             self.write_complex_enum(&mut output, enum_def, &variant_module, &enum_type_name);
             self.write_enum_constructors(&mut output, enum_def, &variant_module, &enum_type_name);
@@ -67,7 +67,6 @@ impl CodegenCtx<'_> {
     }
 
     fn write_simple_enum(
-        &self,
         output: &mut String,
         enum_def: &EnumDefinition,
         variant_module: &impl Fn(&EnumVariant) -> ModulePath,

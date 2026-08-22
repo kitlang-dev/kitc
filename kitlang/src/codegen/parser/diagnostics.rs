@@ -174,8 +174,8 @@ mod tests {
         };
         let msg = err.to_human_message();
         assert!(msg.contains("end of expression"), "msg: {msg}");
-        assert!(msg.contains(")"), "msg: {msg}");
-        assert!(msg.contains(","), "msg: {msg}");
+        assert!(msg.contains(')'), "msg: {msg}");
+        assert!(msg.contains(','), "msg: {msg}");
     }
 
     #[test]

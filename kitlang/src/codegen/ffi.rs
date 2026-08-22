@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use kitc_common::{get_builtin_headers, get_system_include_dirs};
-use kitc_ffi::types::*;
+use kitc_ffi::types::{CDeclarations, CQualifier, CType, MacroValue};
 use kitc_ffi::{PreprocessConfig, extract_header, extract_header_from_source};
 
 use super::inference::TypeInferencer;
@@ -15,6 +15,10 @@ use crate::error::{CompilationError, CompileResult};
 ///
 /// Uses default configuration with builtin system headers enabled.
 /// For custom configuration, use `register_c_header_with_config`.
+///
+/// # Errors
+///
+/// Returns `CompilationError` if header preprocessing or declaration registration fails.
 pub fn register_c_header(header_path: &str, inferencer: &mut TypeInferencer) -> CompileResult<()> {
     let config = PreprocessConfig::new()
         .with_builtin_headers(true)
@@ -23,6 +27,10 @@ pub fn register_c_header(header_path: &str, inferencer: &mut TypeInferencer) -> 
 }
 
 /// Register C header declarations with a custom preprocessor configuration.
+///
+/// # Errors
+///
+/// Returns `CompilationError` if header extraction or declaration registration fails.
 pub fn register_c_header_with_config(
     header_path: &str,
     config: PreprocessConfig,
@@ -77,6 +85,10 @@ fn register_builtin_header(
 }
 
 /// Register declarations from pre-parsed C declarations.
+///
+/// # Errors
+///
+/// Returns `CompilationError` if struct/enum/function registration fails.
 pub fn register_declarations(
     decls: CDeclarations,
     inferencer: &mut TypeInferencer,
@@ -255,7 +267,7 @@ pub fn register_declarations(
     Ok(())
 }
 
-/// Convert a CType to a Kit Type.
+/// Convert a `CType` to a Kit Type.
 fn ctype_to_kit(ct: &CType, decls: &CDeclarations) -> Type {
     let resolved = ct.resolve_typedef(decls);
 
@@ -326,6 +338,10 @@ fn ctype_to_kit(ct: &CType, decls: &CDeclarations) -> Type {
 }
 
 /// Helper to register all includes from a module into the inferencer.
+///
+/// # Errors
+///
+/// Returns `CompilationError` if a header cannot be resolved or registered.
 pub fn register_module_includes(
     includes: &[Include],
     source_path: &Path,

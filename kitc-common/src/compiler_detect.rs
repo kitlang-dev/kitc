@@ -231,7 +231,7 @@ fn try_compiler(path: &Path) -> Option<CompilerInfo> {
     };
     let env = get_compiler_environment(toolchain, path);
 
-    let target_triple = detect_target_triple(&toolchain, path);
+    let target_triple = detect_target_triple(toolchain, path);
     let is_cross_compiling = target_triple.as_ref().is_some_and(|t| {
         !t.contains(std::env::consts::ARCH)
             || (cfg!(windows) && !t.contains("windows"))
@@ -261,9 +261,8 @@ fn query_gcc_like_includes(compiler: &Path) -> Vec<PathBuf> {
         .stderr(Stdio::piped())
         .output();
 
-    let output = match output {
-        Ok(o) => o,
-        Err(_) => return vec![],
+    let Ok(output) = output else {
+        return vec![];
     };
 
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -299,7 +298,7 @@ fn parse_include_paths(stderr: &str) -> Vec<PathBuf> {
     paths
 }
 
-fn detect_target_triple(toolchain: &Toolchain, compiler: &Path) -> Option<String> {
+fn detect_target_triple(toolchain: Toolchain, compiler: &Path) -> Option<String> {
     // Check if compiler name has target prefix (e.g., aarch64-linux-gnu-gcc)
     let name = compiler.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 

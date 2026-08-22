@@ -248,7 +248,7 @@ pub struct SkippedNode {
     pub line: usize,
     /// 1-indexed column number of the skipped node.
     pub column: usize,
-    /// The tree-sitter node kind (e.g. "function_definition", "declaration").
+    /// The tree-sitter node kind (e.g. "`function_definition`", "declaration").
     pub kind: String,
 }
 
@@ -430,7 +430,7 @@ impl CType {
     }
 }
 
-/// Map a string type name from the C parser to our internal CType.
+/// Map a string type name from the C parser to our internal `CType`.
 pub fn c_type_from_name(name: &str) -> Option<CType> {
     match name {
         "void" => Some(CType::Void),

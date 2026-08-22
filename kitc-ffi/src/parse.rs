@@ -1,13 +1,21 @@
 use tree_sitter::{Node, Parser};
 
 use super::error::{FfiError, FfiResult};
-use super::types::*;
+use super::types::{
+    CDeclarations, CField, CFunction, CGlobalVar, CParam, CQualifier, CStruct, CType, CTypedef,
+    CUnion, SkippedNode, c_type_from_name,
+};
 
 const ANONYMOUS_STRUCT: &str = "/* anonymous struct */";
 const ANONYMOUS_UNION: &str = "/* anonymous union */";
 const ANONYMOUS_ENUM: &str = "/* anonymous enum */";
 
 /// Parse a preprocessed C header string and extract declarations.
+///
+/// # Errors
+///
+/// Returns `FfiError::Parse` if the C language cannot be initialized
+/// or if the source cannot be parsed.
 pub fn parse_c_header(source: &str) -> FfiResult<CDeclarations> {
     let mut parser = Parser::new();
     parser
@@ -58,10 +66,8 @@ pub fn parse_c_header(source: &str) -> FfiResult<CDeclarations> {
                     if let Some(func) = parse_function_sig(&child, source_bytes) {
                         decls.functions.push(func);
                     }
-                } else {
-                    if let Some(globals) = parse_global_variables(&child, source_bytes) {
-                        decls.globals.extend(globals);
-                    }
+                } else if let Some(globals) = parse_global_variables(&child, source_bytes) {
+                    decls.globals.extend(globals);
                 }
             }
             "type_definition" => {
@@ -172,7 +178,7 @@ fn parse_function_sig(node: &Node, source: &[u8]) -> Option<CFunction> {
     })
 }
 
-/// Parse a function_declarator node, returning (name, params, is_variadic).
+/// Parse a `function_declarator` node, returning (name, params, `is_variadic`).
 fn parse_function_declarator(node: &Node, source: &[u8]) -> Option<(String, Vec<CParam>, bool)> {
     let mut cursor = node.walk();
     let mut name: Option<String> = None;
@@ -203,7 +209,7 @@ fn parse_function_declarator(node: &Node, source: &[u8]) -> Option<(String, Vec<
     Some((name, params, is_variadic))
 }
 
-/// Parse a parameter_declaration node.
+/// Parse a `parameter_declaration` node.
 fn parse_param_declaration(node: &Node, source: &[u8]) -> Option<CParam> {
     let mut cursor = node.walk();
     let mut param_type: Option<CType> = None;
@@ -320,7 +326,7 @@ fn collect_ptr_qualifiers(node: &Node, source: &[u8]) -> (usize, Vec<CQualifier>
     (depth, qualifiers, name)
 }
 
-/// Parse a pointer_declarator node, returning (type, optional name).
+/// Parse a `pointer_declarator` node, returning (type, optional name).
 fn parse_pointer_declarator(node: &Node, source: &[u8]) -> (CType, Option<String>) {
     let mut qualifiers: Vec<CQualifier> = Vec::new();
     let mut inner_type: Option<CType> = None;
@@ -361,7 +367,7 @@ fn parse_pointer_declarator(node: &Node, source: &[u8]) -> (CType, Option<String
     (CType::Ptr(Box::new(inner), qualifiers), name)
 }
 
-/// Parse an array_declarator node, returning (element_type, size).
+/// Parse an `array_declarator` node, returning (`element_type`, size).
 fn parse_array_declarator(node: &Node, source: &[u8]) -> (CType, Option<usize>) {
     let mut elem_type = CType::Int;
     let mut size: Option<usize> = None;
@@ -389,7 +395,7 @@ fn parse_array_declarator(node: &Node, source: &[u8]) -> (CType, Option<usize>) 
     )
 }
 
-/// Parse a type specifier and return the CType.
+/// Parse a type specifier and return the `CType`.
 fn parse_type_specifier(node: &Node, source: &[u8]) -> CType {
     let text = node_text(node, source);
 
@@ -539,7 +545,7 @@ fn parse_global_variables(node: &Node, source: &[u8]) -> Option<Vec<CGlobalVar>>
     if vars.is_empty() { None } else { Some(vars) }
 }
 
-/// Parse an init_declarator (variable with optional initializer).
+/// Parse an `init_declarator` (variable with optional initializer).
 fn parse_init_declarator(
     node: &Node,
     source: &[u8],
@@ -554,7 +560,7 @@ fn parse_init_declarator(
         match child.kind() {
             "identifier" => {
                 name = Some(node_text(&child, source));
-                var_type = base_type.clone();
+                var_type.clone_from(base_type);
             }
             "pointer_declarator" => {
                 let (ptr_type, ptr_name) = parse_pointer_declarator(&child, source);
@@ -582,7 +588,7 @@ fn parse_init_declarator(
     })
 }
 
-/// Extract a struct definition from inside a type_definition node (e.g. `typedef struct X { ... } X;`).
+/// Extract a struct definition from inside a `type_definition` node (e.g. `typedef struct X { ... } X;`).
 fn extract_struct_from_type_def(
     node: &Node,
     source: &[u8],
@@ -597,7 +603,7 @@ fn extract_struct_from_type_def(
     None
 }
 
-/// Extract a union definition from inside a type_definition node.
+/// Extract a union definition from inside a `type_definition` node.
 fn extract_union_from_type_def(
     node: &Node,
     source: &[u8],
@@ -617,7 +623,7 @@ fn extract_union_from_type_def(
     None
 }
 
-/// Parse a struct_specifier node into a CStruct.
+/// Parse a `struct_specifier` node into a `CStruct`.
 fn parse_struct_specifier(
     node: &Node,
     source: &[u8],
@@ -647,7 +653,7 @@ fn parse_struct_specifier(
     Some(CStruct { name, fields })
 }
 
-/// Parse a field_declaration_list node into a Vec of CField.
+/// Parse a `field_declaration_list` node into a Vec of `CField`.
 fn parse_field_declaration_list(node: &Node, source: &[u8]) -> Option<Vec<CField>> {
     let mut cursor = node.walk();
     let mut fields = Vec::new();
@@ -668,7 +674,7 @@ fn parse_field_declaration_list(node: &Node, source: &[u8]) -> Option<Vec<CField
     }
 }
 
-/// Parse a field_declaration node, returning (field_name, field_type).
+/// Parse a `field_declaration` node, returning (`field_name`, `field_type`).
 fn parse_field_declaration(node: &Node, source: &[u8]) -> Option<(String, CType)> {
     let mut cursor = node.walk();
     let mut field_type: Option<CType> = None;
@@ -731,7 +737,7 @@ fn find_declarator_child<'tree>(node: Node<'tree>, kind: &str) -> Option<Node<'t
 }
 
 /// Check whether a declaration node contains a function declarator (possibly
-/// wrapped in pointer_declarator layers), distinguishing function declarations
+/// wrapped in `pointer_declarator` layers), distinguishing function declarations
 /// from variable declarations.
 fn has_function_declarator_child(node: &Node) -> bool {
     let mut cursor = node.walk();
@@ -743,7 +749,7 @@ fn has_function_declarator_child(node: &Node) -> bool {
     })
 }
 
-/// Extract a CQualifier from a type_qualifier tree-sitter node (which wraps
+/// Extract a `CQualifier` from a `type_qualifier` tree-sitter node (which wraps
 /// `const`/`volatile`/`restrict` as its first child).
 fn qualifier_from_type_qualifier(node: &Node) -> Option<CQualifier> {
     let inner = node.child(0)?;
@@ -755,9 +761,9 @@ fn qualifier_from_type_qualifier(node: &Node) -> Option<CQualifier> {
     }
 }
 
-/// Parse a function from a pointer_declarator that wraps a function_declarator
-/// (e.g. `int *foo(int)` where `*foo(int)` is the pointer_declarator).
-/// Returns `None` if the pointer_declarator does not contain a function_declarator
+/// Parse a function from a `pointer_declarator` that wraps a `function_declarator`
+/// (e.g. `int *foo(int)` where `*foo(int)` is the `pointer_declarator`).
+/// Returns `None` if the `pointer_declarator` does not contain a `function_declarator`
 /// (e.g. it's just a value pointer like `int *x`).
 fn parse_fn_from_pointer_declarator(
     node: &Node,
@@ -779,7 +785,7 @@ fn parse_non_void_param(node: &Node, source: &[u8]) -> Option<CParam> {
 }
 
 /// Extract the identifier name and parameter list from a function-pointer
-/// pointer_declarator like `(*cb)(int, float)`.
+/// `pointer_declarator` like `(*cb)(int, float)`.
 fn parse_fn_ptr_params(node: &Node, source: &[u8]) -> Option<(String, Vec<CParam>)> {
     let inner_fn = find_declarator_child(*node, "function_declarator")?;
     let ptr_name = find_declarator_child(*node, "identifier").map(|n| node_text(&n, source));

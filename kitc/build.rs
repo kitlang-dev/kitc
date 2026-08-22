@@ -24,7 +24,9 @@
 
 use std::{
     collections::HashSet,
-    env, fs,
+    env,
+    fmt::Write as _,
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -164,9 +166,10 @@ fn emit_test(
         }
     }
 
-    generated.push_str(&format!(
+    let _ = write!(
+        generated,
         "#[test]\nfn {name}() -> Result<(), Box<dyn std::error::Error>> {{\n    {body}\n}}\n\n"
-    ));
+    );
 }
 
 fn sanitize_ident(s: &str) -> String {

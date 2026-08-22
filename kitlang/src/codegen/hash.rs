@@ -13,7 +13,7 @@
 pub(crate) fn djb2_hash(data: &[u8]) -> String {
     let mut h: u64 = 5381;
     for b in data {
-        h = h.wrapping_mul(33).wrapping_add(*b as u64);
+        h = h.wrapping_mul(33).wrapping_add(u64::from(*b));
     }
     format!("{:016x}", h)
 }

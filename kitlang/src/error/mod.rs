@@ -148,7 +148,7 @@ impl CompilationError {
             } else {
                 format!("{}:{}:{}", ctx.file, ctx.span.line, ctx.span.column)
             };
-            out.push_str(&format!("error: {inner}\n  --> {loc}\n"));
+            let _ = write!(out, "error: {inner}\n  --> {loc}\n");
             render_snippet(&mut out, ctx);
             out
         } else {

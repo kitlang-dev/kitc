@@ -3,7 +3,7 @@
 use crate::codegen::types::{AssignmentOperator, BinaryOperator, UnaryOperator};
 use crate::lexer::Tok;
 
-/// Infix binding power: (left_bp, right_bp). None = not an infix operator.
+/// Infix binding power: (`left_bp`, `right_bp`). None = not an infix operator.
 /// lbp < rbp = right-associative (assignment); lbp == rbp = left-associative.
 pub fn infix(tok: &Tok) -> Option<(u8, u8)> {
     match tok {

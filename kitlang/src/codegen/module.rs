@@ -20,7 +20,7 @@ impl ModulePath {
     /// Create a module path from a slice of string parts.
     #[must_use]
     pub fn from_parts(parts: &[&str]) -> Self {
-        Self(parts.iter().map(|s| s.to_string()).collect())
+        Self(parts.iter().map(ToString::to_string).collect())
     }
 
     /// Returns `true` if this path has no components.
@@ -70,7 +70,7 @@ impl fmt::Display for ModulePath {
     }
 }
 
-/// The type of import statement, matching the Haskell compiler's ImportType.
+/// The type of import statement, matching the Haskell compiler's `ImportType`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ImportType {
     Single,
@@ -173,7 +173,7 @@ impl DependencyGraph {
             "edge from unknown node: {}",
             from,
         );
-        debug_assert!(self.nodes.contains_key(&to), "edge to unknown node: {}", to,);
+        debug_assert!(self.nodes.contains_key(&to), "edge to unknown node: {}", to);
         self.edges.push(DependencyEdge {
             from: from.clone(),
             to: to.clone(),
@@ -206,7 +206,7 @@ impl DependencyGraph {
     // - **Pruning**: repeated leaf removal ("prune") reveals the strongly connected core of a
     //   dependency graph.
     pub fn is_leaf_module(&self, path: &ModulePath) -> bool {
-        self.adjacency.get(path).is_some_and(|deps| deps.is_empty())
+        self.adjacency.get(path).is_some_and(Vec::is_empty)
     }
 
     /// All modules that `path` directly depends on.
@@ -268,7 +268,7 @@ impl DependencyGraph {
                 .nodes
                 .keys()
                 .filter(|p| !sorted.contains(p))
-                .map(|p| p.to_string())
+                .map(ToString::to_string)
                 .collect();
             return Err(CompilationError::CircularImport {
                 cycle: missing.join(", "),
@@ -282,8 +282,7 @@ impl DependencyGraph {
                 self.edges.iter().all(|e| {
                     pos.get(&e.from)
                         .zip(pos.get(&e.to))
-                        .map(|(from_pos, to_pos)| from_pos > to_pos)
-                        .unwrap_or(true)
+                        .is_none_or(|(from_pos, to_pos)| from_pos > to_pos)
                 })
             },
             "topological_sort produced invalid order",
@@ -415,6 +414,10 @@ impl BindingTable {
     }
 
     /// Insert a name binding; returns an error if the name already exists with a different binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError::DuplicateSymbol` if `name` is already bound to a different value.
     pub fn insert(&mut self, name: String, binding: NameBinding) -> Result<(), CompilationError> {
         if let Some(existing) = self.bindings.get(&name)
             && *existing != binding
@@ -502,6 +505,10 @@ impl ModuleRegistry {
     /// Register a module and its declarations into the registry.
     /// Modules are looked up by path; duplicate paths are overwritten.
     /// Panics in debug builds if a module with the same path is already registered.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError::DuplicateSymbol` if `module` declares a duplicate symbol.
     pub fn register(&mut self, module: Module) -> CompileResult<()> {
         let path = module.path.clone();
         let source_path = module.source_path.clone();
@@ -604,6 +611,10 @@ impl ModuleRegistry {
 
     /// Check whether an extern-visible name has already been registered by another module.
     /// Returns `DuplicateSymbol` if the name already exists in the binding table.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError::DuplicateSymbol` if `name` is already registered as `extern`.
     pub fn check_extern_name(&self, name: &str) -> Result<(), CompilationError> {
         let extern_key = format!("extern.{}", name);
         if self.bindings.contains(&extern_key) {
@@ -616,6 +627,10 @@ impl ModuleRegistry {
     }
 
     /// Register an extern-visible name in the binding table to prevent duplicates.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError::DuplicateSymbol` if `name` is already registered as `extern`.
     pub fn register_extern_name(&mut self, name: &str) -> Result<(), CompilationError> {
         let extern_key = format!("extern.{}", name);
         // Reject duplicates even if the existing binding is also Extern.
@@ -637,7 +652,7 @@ impl ModuleRegistry {
             .map(|d| d.kind)
     }
 
-    /// Resolve a potentially qualified name into (module_path, base_name).
+    /// Resolve a potentially qualified name into (`module_path`, `base_name`).
     /// `foo.bar.baz` -> module `["foo", "bar"]`, name `"baz"`
     /// `baz` -> uses `find_module_for_declaration` with the current module hint.
     pub fn resolve_qualified_name(
@@ -668,6 +683,10 @@ impl ModuleRegistry {
 
     /// Finalize the dependency graph by adding edges from registered import statements.
     /// Returns `Err(CircularImport)` if a cycle is detected.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError::CircularImport` if the dependency graph contains a cycle.
     pub fn finalize_graph(&mut self) -> CompileResult<()> {
         let paths: Vec<ModulePath> = self.modules.keys().cloned().collect();
         for path in &paths {
@@ -711,6 +730,11 @@ impl ModuleRegistry {
         &self.graph
     }
 
+    /// Sort modules so dependencies come before dependents.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError::CircularImport` if the graph contains a cycle.
     pub fn topological_sort(&self) -> CompileResult<Vec<ModulePath>> {
         self.graph.topological_sort()
     }

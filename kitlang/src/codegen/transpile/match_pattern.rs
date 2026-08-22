@@ -1,9 +1,11 @@
+use std::fmt::Write as _;
+
 use super::CodegenCtx;
 use crate::codegen::ast::{self, Expr, ExprKind, Literal, MatchArm, MatchStmt};
 use crate::codegen::name_mangling::mangle_enum_variant;
 use crate::codegen::types::{Type, TypeId};
 
-/// A variable binding (name, c_type, value).
+/// A variable binding (name, `c_type`, value).
 pub type VariableBinding = (String, String, String);
 
 /// Result of decomposing a pattern: a C condition and variable bindings.
@@ -62,11 +64,11 @@ impl CodegenCtx<'_> {
                 code.push_str(&self.transpile_match_body(&arm.body, bindings));
                 first = false;
             } else if first {
-                code.push_str(&format!("if ({condition}) "));
+                let _ = write!(code, "if ({condition}) ");
                 code.push_str(&self.transpile_match_body(&arm.body, bindings));
                 first = false;
             } else {
-                code.push_str(&format!(" else if ({condition}) "));
+                let _ = write!(code, " else if ({condition}) ");
                 code.push_str(&self.transpile_match_body(&arm.body, bindings));
             }
         }
@@ -77,7 +79,7 @@ impl CodegenCtx<'_> {
     fn transpile_match_body(&self, body: &ast::Block, bindings: &[VariableBinding]) -> String {
         let mut code = String::from("{\n");
         for (name, ctype, value) in bindings {
-            code.push_str(&format!("    {ctype} {name} = {value};\n"));
+            let _ = writeln!(code, "    {ctype} {name} = {value};");
         }
         for stmt in &body.stmts {
             let stmt_code = self.transpile_stmt(stmt);
@@ -152,7 +154,7 @@ impl CodegenCtx<'_> {
         }
     }
 
-    /// If `name` is an enum variant, return a PatternMatch comparing it against
+    /// If `name` is an enum variant, return a `PatternMatch` comparing it against
     /// `matched_value`.  Returns `None` for non-variant identifiers (plain bindings).
     fn decompose_identifier_pattern(
         &self,
@@ -160,13 +162,12 @@ impl CodegenCtx<'_> {
         matched_ty: TypeId,
         matched_value: &str,
     ) -> PatternMatch {
-        let info = match self
+        let Some(info) = self
             .inferencer
             .symbols()
             .lookup_enum_variant_by_simple_name(name)
-        {
-            Some(info) => info,
-            None => return self.binding_pattern(name, matched_ty, matched_value),
+        else {
+            return self.binding_pattern(name, matched_ty, matched_value);
         };
         // The matched value's own type selects the monomorph (variant lookup
         // order for template/monomorph infos is not deterministic).
@@ -175,9 +176,8 @@ impl CodegenCtx<'_> {
             Ok(_) if self.inferencer.is_monomorph_name(&info.enum_name) => info.enum_name.clone(),
             _ => self.resolved_enum_name(matched_ty, &info.enum_name),
         };
-        let enum_def = match self.inferencer.symbols().lookup_enum(&enum_name) {
-            Some(def) => def,
-            None => return self.binding_pattern(name, matched_ty, matched_value),
+        let Some(enum_def) = self.inferencer.symbols().lookup_enum(&enum_name) else {
+            return self.binding_pattern(name, matched_ty, matched_value);
         };
         let all_simple = enum_def.variants.iter().all(|v| v.args.is_empty());
         let mangled = mangle_enum_variant(&self.current_module, &enum_name, name);
@@ -263,8 +263,7 @@ impl CodegenCtx<'_> {
             // the raw `T`-style annotations.
             let field_ty = variant_def
                 .and_then(|v| v.args.get(i))
-                .map(|a| a.ty)
-                .unwrap_or(info.arg_types[i]);
+                .map_or(info.arg_types[i], |a| a.ty);
             let field_name = variant_def
                 .and_then(|vd| vd.args.get(i))
                 .map(|a| &a.name)

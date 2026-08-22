@@ -1,7 +1,7 @@
-// Primary expression parsers.
-//
-// These are implementations on `ExprParser` that are split into their own
-// module for readability. The main module (`mod.rs`) declares `mod primary;`.
+//! Primary expression parsers.
+//!
+//! These are implementations on `ExprParser` that are split into their own
+//! module for readability. The main module declares `mod primary;`.
 
 use crate::codegen::ast::{Expr, ExprKind, Literal};
 use crate::codegen::type_ast::FieldInit;
@@ -12,7 +12,7 @@ use super::super::binding_power::postfix;
 use super::super::diagnostics::ExprParseError;
 use super::ExprParser;
 
-impl<'a> ExprParser<'a> {
+impl ExprParser<'_> {
     /// Iteratively apply postfix operators (call, index, field access) to
     /// a base expression. Zero stack frames added per iteration. The
     /// chain is bounded by the source's syntactic length, but the parser
@@ -282,13 +282,12 @@ impl<'a> ExprParser<'a> {
         let start = callee.span.offset;
         let paren_end = self.base_offset + self.peek().span.end + 1; // `)` relative to expr text +1
         self.advance(); // consume `(`
-        let args = self.parse_comma_list(Tok::RParen, |p| p.parse_expr())?;
+        let args = self.parse_comma_list(Tok::RParen, ExprParser::parse_expr)?;
         // after parse_comma_list the closing paren has been consumed, so peek is the next token
         // use the last arg's end or the computed paren end
         let end = args
             .last()
-            .map(|a| a.span.offset + a.span.length)
-            .unwrap_or(paren_end);
+            .map_or(paren_end, |a| a.span.offset + a.span.length);
         Ok(Expr {
             kind: ExprKind::Call {
                 callee: Box::new(callee),
@@ -303,11 +302,10 @@ impl<'a> ExprParser<'a> {
     fn parse_array_literal(&mut self) -> Result<Expr, ExprParseError> {
         let (arr_start, arr_end) = self.token_abs(&self.peek().span); // `[`
         self.advance(); // consume `[`
-        let elements = self.parse_comma_list(Tok::RBracket, |p| p.parse_expr())?;
+        let elements = self.parse_comma_list(Tok::RBracket, ExprParser::parse_expr)?;
         let end = elements
             .last()
-            .map(|a| a.span.offset + a.span.length)
-            .unwrap_or(arr_end);
+            .map_or(arr_end, |a| a.span.offset + a.span.length);
         Ok(Expr {
             kind: ExprKind::ArrayLiteral { elements },
             ty: TypeId::default(),
@@ -353,8 +351,7 @@ impl<'a> ExprParser<'a> {
         })?;
         let end = fields
             .last()
-            .map(|f| f.value.span.offset + f.value.span.length)
-            .unwrap_or(start + 6);
+            .map_or(start + 6, |f| f.value.span.offset + f.value.span.length);
         Ok(Expr {
             kind: ExprKind::StructInit {
                 struct_type: Some(Type::from_kit(&type_name)),

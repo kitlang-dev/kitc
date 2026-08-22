@@ -205,7 +205,12 @@ impl TypeInferencer {
         self.imported_structs.contains(name)
     }
 
-    /// Infer types for an entire program
+    /// Infer types for an entire program.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError` on type mismatches, unresolved types, or invalid
+    /// generic applications discovered during inference.
     pub fn infer_program(&mut self, prog: &mut Program) -> CompileResult<()> {
         // Per-pass monomorphization state is rebuilt every pass; the fixpoint driver re-runs
         // `infer_program` until no monomorphs are realized.
@@ -865,9 +870,13 @@ impl TypeInferencer {
             else {
                 return Ok(None);
             };
-            let variant = match def.variants.iter().find(|v| v.name == info.variant_name) {
-                Some(v) => v.clone(),
-                None => return Ok(None),
+            let Some(variant) = def
+                .variants
+                .iter()
+                .find(|v| v.name == info.variant_name)
+                .cloned()
+            else {
+                return Ok(None);
             };
             let id_map = param_id_map(&def.type_params, &inst.params);
             let mut tys = Vec::new();
@@ -881,9 +890,8 @@ impl TypeInferencer {
             && self.is_monomorph_name(&name)
             && let Some(ed) = self.symbols.lookup_enum(&name)
         {
-            let variant = match ed.variants.iter().find(|v| v.name == info.variant_name) {
-                Some(v) => v,
-                None => return Ok(None),
+            let Some(variant) = ed.variants.iter().find(|v| v.name == info.variant_name) else {
+                return Ok(None);
             };
             return Ok(Some(variant.args.iter().map(|a| a.ty).collect()));
         }
@@ -985,13 +993,10 @@ impl TypeInferencer {
             .resolve(right_ty_id)
             .map_err(|e| type_err!("Failed to resolve tuple type: {e}"))?;
 
-        let elems = match &tuple_ty {
-            Type::Tuple(e) => e,
-            _ => {
-                return Err(type_err!(
-                    "Cannot destructure a non-tuple value of type {tuple_ty}"
-                ));
-            }
+        let Type::Tuple(elems) = &tuple_ty else {
+            return Err(type_err!(
+                "Cannot destructure a non-tuple value of type {tuple_ty}"
+            ));
         };
 
         // Bind the RHS once so its evaluation is not duplicated across slots.
@@ -1103,9 +1108,8 @@ impl TypeInferencer {
                 Ok(())
             }
             ExprKind::TupleLit { elements: subs } => {
-                let sub_elems = match elem_ty {
-                    Type::Tuple(e) => e,
-                    _ => return Err(type_err!("Cannot destructure a non-tuple pattern element")),
+                let Type::Tuple(sub_elems) = elem_ty else {
+                    return Err(type_err!("Cannot destructure a non-tuple pattern element"));
                 };
                 if subs.len() != sub_elems.len() {
                     return Err(type_err!("Nested tuple destructuring arity mismatch"));
@@ -1169,7 +1173,7 @@ impl TypeInferencer {
     /// Constructor calls and patterns resolve to the *template* declaration of a generic enum
     /// (never to a monomorph, which is selected by the expression's type), so templates are
     /// preferred here deterministically; the symbol table would otherwise return whichever
-    /// registered first (HashMap iteration order).
+    /// registered first (`HashMap` iteration order).
     fn variant_info_by_simple_name(&self, name: &str) -> Option<EnumVariantInfo> {
         if let Some((_, (_, TemplateDef::Enum(def)))) = self.monomorphs.templates.iter().find(
             |(_, (_, def))| {
@@ -1321,7 +1325,7 @@ impl TypeInferencer {
             ));
         }
 
-        let expected_types: Vec<_> = variant_info.arg_types.to_vec();
+        let expected_types: Vec<_> = variant_info.arg_types.clone();
         let enum_ty = self
             .store
             .new_known(Type::Named(variant_info.enum_name.clone()));
@@ -1404,9 +1408,8 @@ impl TypeInferencer {
         // Infer the receiver to learn its concrete type. If it isn't a value (e.g. a module-
         // qualified path like `module.func`), this isn't a trait-method dispatch; fall through to
         // ordinary call handling rather than resolving a module name as a value.
-        let recv_ty = match self.infer_expr(receiver) {
-            Ok(t) => t,
-            Err(_) => return Ok(false),
+        let Ok(recv_ty) = self.infer_expr(receiver) else {
+            return Ok(false);
         };
         let recv_type = self.store.resolve(recv_ty)?;
         let Some(symbol) = self.lookup_method(&recv_type, field_name) else {

@@ -144,6 +144,10 @@ pub fn preprocess_header(header_path: &Path, config: &PreprocessConfig) -> FfiRe
 /// Preprocess a source string from memory (no file system access for the source itself).
 ///
 /// The `config` parameter controls include resolution, predefined macros, and target platform.
+///
+/// # Errors
+///
+/// Returns `FfiError::Preprocess` if includium fails to preprocess the source.
 pub fn preprocess_source_from_string(source: &str, config: &PreprocessConfig) -> FfiResult<String> {
     preprocess_source(source, "", config)
 }

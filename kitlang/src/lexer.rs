@@ -278,7 +278,7 @@ mod tests {
     fn integer_literals() {
         assert_eq!(kinds("0"), vec![Tok::IntLit(0)]);
         assert_eq!(kinds("42"), vec![Tok::IntLit(42)]);
-        assert_eq!(kinds("1234567890"), vec![Tok::IntLit(1234567890)]);
+        assert_eq!(kinds("1234567890"), vec![Tok::IntLit(1_234_567_890)]);
     }
 
     #[test]

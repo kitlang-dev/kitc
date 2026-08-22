@@ -109,7 +109,7 @@ impl Parser {
         pair.as_str().to_string()
     }
 
-    /// Check if a var_decl uses the 'const' keyword
+    /// Check if a `var_decl` uses the 'const' keyword
     fn is_const_var_decl(pair: &Pair<'_, Rule>) -> bool {
         pair.clone()
             .into_inner()
@@ -117,6 +117,10 @@ impl Parser {
     }
 
     /// Parse an `include` rule into an `Include`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError` if the `include` pair has no path literal.
     pub fn parse_include(&self, pair: Pair<Rule>) -> CompileResult<Include> {
         let parent_span = pair.as_span();
         let mut inner = pair.into_inner();
@@ -139,6 +143,10 @@ impl Parser {
     }
 
     /// Parse an `import` rule into a `ModuleImport`, detecting single/wildcard/double-wildcard.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError` if the `import` pair has no path.
     pub fn parse_import(&self, pair: Pair<Rule>) -> CompileResult<ModuleImport> {
         let parent_span = pair.as_span();
         let span = pair.as_span();
@@ -169,7 +177,7 @@ impl Parser {
         Ok(ModuleImport::with_span(path, import_type, (start, end)))
     }
 
-    /// Parse a `metadata_and_modifiers` pair into (metadata list, is_public).
+    /// Parse a `metadata_and_modifiers` pair into (metadata list, `is_public`).
     pub(super) fn parse_metadata_and_modifiers(
         pair: Option<Pair<'_, Rule>>,
     ) -> (Vec<Metadata>, bool) {
@@ -224,10 +232,21 @@ impl Parser {
     /// Parse an expression via the Pratt parser. This is the unified
     /// entry point used by every pest-side call site that needs an
     /// expression AST node.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError` if the expression fails to tokenize or parse via the Pratt
+    /// parser.
     pub fn parse_expr(&self, pair: Pair<Rule>) -> CompileResult<Expr> {
         PestExpr::new(pair, self.file.clone(), self.source.clone()).parse()
     }
 
+    /// Parse a `function_decl` rule into a `Function`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError` if the function name is missing or if type parameters,
+    /// parameters, return type, or body fail to parse.
     pub fn parse_function(
         &self,
         pair: Pair<Rule>,
@@ -287,6 +306,11 @@ impl Parser {
     }
 
     /// Parse a `struct_def` rule into a `StructDefinition`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError` if the struct name is missing or if type parameters or fields
+    /// fail to parse.
     pub fn parse_struct_def(
         &self,
         pair: Pair<Rule>,
@@ -339,6 +363,11 @@ impl Parser {
     }
 
     /// Parse an `enum_def` rule into an `EnumDefinition`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError` if the enum name is missing or if type parameters or variants
+    /// fail to parse.
     pub fn parse_enum_def(
         &self,
         pair: Pair<Rule>,
@@ -440,6 +469,11 @@ impl Parser {
     }
 
     /// Parse a `trait_def` rule into a `TraitDefinition`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError` if the trait name is missing or if type parameters, methods,
+    /// or fields fail to parse.
     pub fn parse_trait_def(&self, pair: Pair<Rule>) -> CompileResult<TraitDefinition> {
         let parent_span = pair.as_span();
         let mut inner = pair.into_inner();
@@ -490,6 +524,11 @@ impl Parser {
     }
 
     /// Parse a `trait_impl` rule into an `ImplDefinition`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError` if the trait type is missing or if type parameters,
+    /// target type, or methods fail to parse.
     pub fn parse_trait_impl(&self, pair: Pair<Rule>) -> CompileResult<ImplDefinition> {
         let parent_span = pair.as_span();
         let mut inner = pair.into_inner();
@@ -533,6 +572,11 @@ impl Parser {
     /// Parse a `default Trait as Type;` specialization declaration into a
     /// `DefaultSpecialization`. The trait is reduced to its base name; the default type is kept
     /// as a full `Type` so it can be bound to the constrained type variable.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError` if the trait or default type is missing, if either fails to
+    /// parse, or if the trait type is not a named trait.
     pub fn parse_default_decl(&self, pair: Pair<Rule>) -> CompileResult<DefaultSpecialization> {
         let parent_span = pair.as_span();
         let mut inner = pair.into_inner();
@@ -568,6 +612,11 @@ impl Parser {
     }
 
     /// Parse a `rule_set` rule into a `RuleSet`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError` if the rule set name is missing or if any rule declaration
+    /// fails to parse.
     pub fn parse_rule_set(&self, pair: Pair<Rule>) -> CompileResult<RuleSet> {
         let parent_span = pair.as_span();
         let mut inner = pair.into_inner();
@@ -599,6 +648,11 @@ impl Parser {
     }
 
     /// Parse a `typedef_stmt` rule into a `TypeDef`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError` if the typedef name or type is missing or if the type fails
+    /// to parse.
     pub fn parse_typedef(&self, pair: Pair<Rule>) -> CompileResult<TypeDef> {
         let parent_span = pair.as_span();
         let mut inner = pair.into_inner();
@@ -614,6 +668,10 @@ impl Parser {
     }
 
     /// Parse a `using_stmt` rule into a `Vec<UsingClause>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError` if any `using` clause fails to parse.
     pub fn parse_using(&self, pair: Pair<Rule>) -> CompileResult<Vec<UsingClause>> {
         // using_stmt = { "using" ~ (using_clause ~ ("," ~ using_clause)*) ~ ";" }
         let clauses: CompileResult<Vec<_>> = pair
@@ -895,6 +953,11 @@ impl Parser {
     }
 
     /// Parse a top-level `var_decl` rule into a `GlobalDecl`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError` if the identifier is missing or if the type annotation or
+    /// initializer fails to parse.
     pub fn parse_global_var_decl(&self, pair: &Pair<Rule>) -> CompileResult<GlobalDecl> {
         // Extract metadata_and_modifiers, if present
         let (metadata, is_public) = match pair

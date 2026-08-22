@@ -813,8 +813,7 @@ fn validate_type_param_scopes(merged: &Program) -> CompileResult<()> {
     for s in &merged.structs {
         let declared = structs
             .get(s.name.as_str())
-            .map(|v| v.as_slice())
-            .unwrap_or(&[]);
+            .map_or(&[] as &[&str], Vec::as_slice);
         for f in &s.fields {
             check_type_param_refs(&f.annotation, declared, &s.name)?;
         }
@@ -823,8 +822,7 @@ fn validate_type_param_scopes(merged: &Program) -> CompileResult<()> {
     for e in &merged.enums {
         let declared = enums
             .get(e.name.as_str())
-            .map(|v| v.as_slice())
-            .unwrap_or(&[]);
+            .map_or(&[] as &[&str], Vec::as_slice);
 
         for v in &e.variants {
             for a in &v.args {
@@ -1031,6 +1029,11 @@ impl Compiler {
     ///    generates monomorphs of generic templates
     /// 4. Generate per-module `.c` and `.h` files
     /// 5. Invoke the system C compiler to link everything into an executable
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilationError` if module loading, header processing, type
+    /// inference, code generation, or C compilation fails.
     pub fn compile(&mut self, progress: &dyn Progress) -> CompileResult<()> {
         progress.stage("Loading modules");
         let modules_start = Instant::now();

@@ -425,9 +425,10 @@ impl CodegenCtx<'_> {
             let idx_var = format!("__kit_{var}_idx");
             let mut s = format!("for (int {idx_var} = 0; {idx_var} < {size}; ++{idx_var}) ");
             let mut body_code = String::from("{\n");
-            body_code.push_str(&format!(
-                "    {elem_c_name} {var} = {iter_str}[{idx_var}];\n"
-            ));
+            let _ = writeln!(
+                body_code,
+                "    {elem_c_name} {var} = {iter_str}[{idx_var}];"
+            );
             for stmt in &body.stmts {
                 let stmt_code = self.transpile_stmt(stmt);
                 for line in stmt_code.lines() {
@@ -562,7 +563,7 @@ impl CodegenCtx<'_> {
 
     /// Format a variable declaration with proper C syntax.
     ///
-    /// For CArray types (e.g., `CArray(Int, 3)`), this produces `int name[3]` instead of the
+    /// For `CArray` types (e.g., `CArray(Int, 3)`), this produces `int name[3]` instead of the
     /// default `int[3] name` which is invalid C.
     fn format_var_decl(&self, type_id: TypeId, name: &str) -> String {
         let resolved = self.inferencer.store.resolve(type_id);
@@ -782,8 +783,7 @@ impl CodegenCtx<'_> {
             .store
             .resolve(ty)
             .ok()
-            .map(|t| self.type_to_c_name(&t))
-            .unwrap_or_else(|| "int[]".to_string());
+            .map_or_else(|| "int[]".to_string(), |t| self.type_to_c_name(&t));
         let elems = elements
             .iter()
             .map(|e| self.transpile_expr(e))
@@ -867,7 +867,7 @@ impl CodegenCtx<'_> {
         let mut headers: HashSet<String> = HashSet::new();
         for (_, elems) in &shapes {
             for e in elems {
-                for h in e.to_c_repr().headers.iter() {
+                for h in &e.to_c_repr().headers {
                     headers.insert(h.clone());
                 }
             }
